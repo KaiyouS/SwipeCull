@@ -150,6 +150,33 @@ class MediaStorage(private val context: Context) {
         }
     }.getOrNull()
 
+    /** Builds a [MediaFile] for a document URI (e.g. a tagged file), or null if it's gone / not media. */
+    fun mediaFileFor(doc: Uri): MediaFile? = runCatching {
+        resolver.query(
+            doc,
+            arrayOf(
+                Document.COLUMN_DOCUMENT_ID,
+                Document.COLUMN_DISPLAY_NAME,
+                Document.COLUMN_MIME_TYPE,
+                Document.COLUMN_LAST_MODIFIED,
+                Document.COLUMN_SIZE,
+            ),
+            null, null, null,
+        )?.use { c ->
+            if (!c.moveToFirst()) return@use null
+            val mime = c.getString(2) ?: return@use null
+            if (!(mime.startsWith("image/") || mime.startsWith("video/"))) return@use null
+            MediaFile(
+                uri = doc,
+                documentId = c.getString(0) ?: DocumentsContract.getDocumentId(doc),
+                name = c.getString(1) ?: "file",
+                mime = mime,
+                lastModified = c.getLong(3),
+                size = c.getLong(4),
+            )
+        }
+    }.getOrNull()
+
     private fun copyThenDelete(src: Uri, name: String, mime: String, toParent: Uri): Uri {
         val dst = DocumentsContract.createDocument(resolver, toParent, mime, name)
             ?: error("Could not create \"$name\" in the destination folder")

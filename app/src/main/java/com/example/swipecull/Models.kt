@@ -45,6 +45,10 @@ data class UiState(
     /** File URI string -> tags on that file. */
     val tagAssign: Map<String, Set<String>> = emptyMap(),
     val showTags: Boolean = false,
+    /** Go through files in random order. */
+    val shuffle: Boolean = false,
+    /** Non-null while re-reviewing tagged files: the tag name, or "All tagged". */
+    val reviewLabel: String? = null,
     val bulkBusy: Boolean = false,
 ) {
     val current: MediaFile? get() = items.getOrNull(index)

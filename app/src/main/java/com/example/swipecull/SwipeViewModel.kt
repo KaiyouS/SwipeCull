@@ -48,12 +48,16 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val customDest: Boolean,
         val keepParent: Uri?,
         val keepVideosOnly: Boolean,
+        /** True when re-reviewing tagged files, which can live in different folders. */
+        val tagReview: Boolean = false,
     )
 
     private enum class Kind { DELETE, KEEP_MOVE, KEEP_STAY }
 
     private class Action(val index: Int, val file: MediaFile, val kind: Kind) {
         @Volatile var movedUri: Uri? = null
+        /** Folder the file was in before it was moved (where undo puts it back). */
+        @Volatile var origParent: Uri? = null
         @Volatile var failed: Boolean = false
         /** Tags the file had when it was sent to the delete folder (restored on undo). */
         @Volatile var savedTags: Set<String> = emptySet()
@@ -71,6 +75,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         refreshTags()
+        _state.update { it.copy(shuffle = prefs.getBoolean(KEY_SHUFFLE, false)) }
 
         val src = prefs.getString(KEY_SOURCE, null)?.let(Uri::parse)
         val dst = prefs.getString(KEY_DEST, null)?.let(Uri::parse)
@@ -140,6 +145,23 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(keepUri = uri, keepName = uri?.let { u -> storage.friendlyName(u) }) }
     }
 
+    /**
+     * Turns random order on/off. Mid-session it reshuffles only the files still ahead of you
+     * (turning it off puts them back newest-first); the file on screen stays put.
+     */
+    fun toggleShuffle() {
+        val on = !_state.value.shuffle
+        prefs.edit().putBoolean(KEY_SHUFFLE, on).apply()
+        _state.update { st ->
+            val head = st.items.take(st.index + 1)
+            val tail = st.items.drop(st.index + 1)
+            st.copy(
+                shuffle = on,
+                items = head + if (on) tail.shuffled() else tail.sortedByDescending { it.lastModified },
+            )
+        }
+    }
+
     fun setKeepVideosOnly(value: Boolean) {
         _state.update { it.copy(keepVideosOnly = value) }
     }
@@ -163,7 +185,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 sessionActive = true, loading = true, items = emptyList(), index = 0,
                 movedCount = 0, keptCount = 0, canUndo = false, undoing = false,
-                markedInFolder = null, favorites = emptySet(),
+                markedInFolder = null, favorites = emptySet(), reviewLabel = null,
             )
         }
 
@@ -174,8 +196,9 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                     val destParent = dst?.let { storage.treeRoot(it) }
                         ?: storage.findChildDir(root, DEFAULT_DEST_FOLDER)
                     val keepParent = keep?.let { storage.treeRoot(it) }
+                    val media = storage.listMedia(src, kept.get(src))
                     Session(src, root, destParent, dst != null, keepParent, keepVideosOnly) to
-                        storage.listMedia(src, kept.get(src))
+                        if (_state.value.shuffle) media.shuffled() else media
                 }
                 session = ses
                 _state.update { it.copy(loading = false, items = media) }
@@ -188,7 +211,10 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
 
     fun endSession() {
         _state.update {
-            it.copy(sessionActive = false, loading = false, items = emptyList(), index = 0, canUndo = false)
+            it.copy(
+                sessionActive = false, loading = false, items = emptyList(), index = 0,
+                canUndo = false, reviewLabel = null,
+            )
         }
     }
 
@@ -204,6 +230,10 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun Session.ensureDest(): Uri =
         destParent ?: storage.getOrCreateDir(sourceParent, DEFAULT_DEST_FOLDER).also { destParent = it }
+
+    /** The folder a file currently sits in (tagged files can be in different folders). */
+    private fun fromParentOf(ses: Session, file: MediaFile): Uri =
+        if (ses.tagReview) storage.parentOf(file.uri) else ses.sourceParent
 
     /** Swipe left: move the current file into the marked-for-deletion folder. */
     fun markForDeletion() {
@@ -227,7 +257,9 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         jobs.trySend {
             try {
                 val dest = ses.ensureDest()
-                action.movedUri = storage.move(file.uri, file.name, file.mime, ses.sourceParent, dest)
+                val from = fromParentOf(ses, file)
+                action.origParent = from
+                action.movedUri = storage.move(file.uri, file.name, file.mime, from, dest)
             } catch (e: Exception) {
                 action.failed = true
                 if (action.savedTags.isNotEmpty()) {
@@ -255,20 +287,23 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val action = Action(s.index, file, if (moves) Kind.KEEP_MOVE else Kind.KEEP_STAY)
 
         synchronized(history) { history.addLast(action) }
-        if (!moves) kept.add(ses.source, file.documentId)
+        // (Tag reviews are driven by tags, not by the "already kept" list.)
+        if (!moves && !ses.tagReview) kept.add(ses.source, file.documentId)
         _state.update { it.copy(index = it.index + 1, keptCount = it.keptCount + 1, canUndo = true) }
 
         if (moves && keepParent != null) {
             jobs.trySend {
                 try {
-                    val newUri = storage.move(file.uri, file.name, file.mime, ses.sourceParent, keepParent)
+                    val from = fromParentOf(ses, file)
+                    action.origParent = from
+                    val newUri = storage.move(file.uri, file.name, file.mime, from, keepParent)
                     action.movedUri = newUri
                     tags.rename(file.uri.toString(), newUri.toString())
                     refreshTags()
                 } catch (e: Exception) {
                     // Couldn't move it: treat it as an ordinary keep so it doesn't reappear.
                     action.failed = true
-                    kept.add(ses.source, file.documentId)
+                    if (!ses.tagReview) kept.add(ses.source, file.documentId)
                     _events.tryEmit("Couldn't move ${file.name} to the keep folder: ${e.message ?: e.javaClass.simpleName}")
                 }
             }
@@ -298,7 +333,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                     val from = (if (action.kind == Kind.DELETE) ses.destParent else ses.keepParent)
                         ?: error("Destination folder missing")
                     restored = storage.move(
-                        movedUri, action.file.name, action.file.mime, from, ses.sourceParent,
+                        movedUri, action.file.name, action.file.mime, from, action.origParent ?: ses.sourceParent,
                     )
                     if (action.kind == Kind.DELETE) {
                         if (action.savedTags.isNotEmpty()) tags.setTags(restored.toString(), action.savedTags)
@@ -373,6 +408,58 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteTag(tag: String) {
         tags.deleteTag(tag)
         refreshTags()
+    }
+
+    /**
+     * Swipe through just the tagged files again (one tag, or every tagged file when [tag] is
+     * null). Uses the same delete / keep folders as a normal run.
+     */
+    fun startTagReview(tag: String?) {
+        val s = _state.value
+        val src = s.sourceUri
+        if (src == null) {
+            _events.tryEmit("Choose a folder to review first (the delete folder lives there by default)")
+            return
+        }
+        val uris = if (tag == null) tags.snapshot().assign.keys.toList() else tags.urisWith(tag)
+        if (uris.isEmpty()) {
+            _events.tryEmit("No tagged files")
+            return
+        }
+        val dst = s.destUri
+        val keep = s.keepUri
+        val keepVideosOnly = s.keepVideosOnly
+        val shuffle = s.shuffle
+
+        synchronized(history) { history.clear() }
+        session = null
+        _state.update {
+            it.copy(
+                showTags = false, sessionActive = true, loading = true, items = emptyList(), index = 0,
+                movedCount = 0, keptCount = 0, canUndo = false, undoing = false,
+                markedInFolder = null, favorites = emptySet(), reviewLabel = tag ?: "All tagged",
+            )
+        }
+
+        viewModelScope.launch {
+            try {
+                val (ses, media) = withContext(Dispatchers.IO) {
+                    val root = storage.treeRoot(src)
+                    val destParent = dst?.let { storage.treeRoot(it) }
+                        ?: storage.findChildDir(root, DEFAULT_DEST_FOLDER)
+                    val keepParent = keep?.let { storage.treeRoot(it) }
+                    val files = uris.mapNotNull { storage.mediaFileFor(Uri.parse(it)) }
+                        .sortedByDescending { it.lastModified }
+                    Session(src, root, destParent, dst != null, keepParent, keepVideosOnly, tagReview = true) to
+                        if (shuffle) files.shuffled() else files
+                }
+                session = ses
+                _state.update { it.copy(loading = false, items = media) }
+            } catch (ex: Exception) {
+                _state.update { it.copy(sessionActive = false, loading = false, reviewLabel = null) }
+                _events.tryEmit("Couldn't start the review: ${ex.message ?: ex.javaClass.simpleName}")
+            }
+        }
     }
 
     /** Moves every file carrying [tag] into [dest], then drops that tag from them. */
@@ -523,5 +610,6 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_DEST = "dest"
         const val KEY_KEEP = "keep"
         const val KEY_KEEP_VIDEOS_ONLY = "keep_videos_only"
+        const val KEY_SHUFFLE = "shuffle"
     }
 }

@@ -216,6 +216,18 @@ private fun SetupScreen(
             TextButton(onClick = { vm.setKeep(null) }) { Text("Don't move kept files") }
         }
 
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                Text("Shuffle", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Go through the files in random order",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = state.shuffle, onCheckedChange = { vm.toggleShuffle() })
+        }
+
         Button(
             onClick = { vm.start() },
             enabled = state.sourceUri != null,
@@ -296,7 +308,9 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
             Column(Modifier.weight(1f)) {
                 Text("${state.index + 1} / ${state.items.size}", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "${state.movedCount} marked · ${state.keptCount} kept",
+                    (state.reviewLabel?.let { "Tag: $it · " } ?: "") +
+                        "${state.movedCount} marked · ${state.keptCount} kept" +
+                        if (state.shuffle) " · shuffled" else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -319,6 +333,10 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                             onClick = { menuOpen = false; confirmDelete = true },
                         )
                     }
+                    DropdownMenuItem(
+                        text = { Text(if (state.shuffle) "Shuffle: on (tap to turn off)" else "Shuffle: off (tap to turn on)") },
+                        onClick = { menuOpen = false; vm.toggleShuffle() },
+                    )
                     DropdownMenuItem(
                         text = { Text("Tagged files…") },
                         onClick = { menuOpen = false; vm.openTags() },
@@ -599,8 +617,14 @@ private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
             enabled = state.canUndo && !state.undoing,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Undo last swipe") }
-        OutlinedButton(onClick = { vm.resetKept() }, modifier = Modifier.fillMaxWidth()) {
-            Text("Review the kept files again")
+        if (state.reviewLabel == null) {
+            OutlinedButton(onClick = { vm.resetKept() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Review the kept files again")
+            }
+        } else {
+            OutlinedButton(onClick = { vm.openTags() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Back to tagged files")
+            }
         }
         TextButton(onClick = { vm.endSession() }) { Text("Choose another folder") }
     }
