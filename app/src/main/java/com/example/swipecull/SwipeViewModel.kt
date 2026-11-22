@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentSender
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +27,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     private val appCtx: Application = app
     private val storage = MediaStorage(app)
     private val kept = KeptStore(app)
+    private val tags = TagStore(app)
     private val prefs = app.getSharedPreferences("swipecull", Context.MODE_PRIVATE)
 
     private val _state = MutableStateFlow(UiState())
@@ -53,6 +55,8 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     private class Action(val index: Int, val file: MediaFile, val kind: Kind) {
         @Volatile var movedUri: Uri? = null
         @Volatile var failed: Boolean = false
+        /** Tags the file had when it was sent to the delete folder (restored on undo). */
+        @Volatile var savedTags: Set<String> = emptySet()
     }
 
     @Volatile private var session: Session? = null
@@ -65,6 +69,8 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             for (job in jobs) runCatching { job() }
         }
+
+        refreshTags()
 
         val src = prefs.getString(KEY_SOURCE, null)?.let(Uri::parse)
         val dst = prefs.getString(KEY_DEST, null)?.let(Uri::parse)
@@ -207,6 +213,12 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         if (s.undoing) return
 
         val action = Action(s.index, file, Kind.DELETE)
+        // A file headed for deletion shouldn't linger in tag lists; undo puts its tags back.
+        action.savedTags = tags.tagsOf(file.uri.toString())
+        if (action.savedTags.isNotEmpty()) {
+            tags.removeFile(file.uri.toString())
+            refreshTags()
+        }
         synchronized(history) { history.addLast(action) }
         _state.update {
             it.copy(index = it.index + 1, movedCount = it.movedCount + 1, canUndo = true)
@@ -218,6 +230,10 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 action.movedUri = storage.move(file.uri, file.name, file.mime, ses.sourceParent, dest)
             } catch (e: Exception) {
                 action.failed = true
+                if (action.savedTags.isNotEmpty()) {
+                    tags.setTags(file.uri.toString(), action.savedTags)
+                    refreshTags()
+                }
                 _state.update { it.copy(movedCount = it.movedCount - 1) }
                 _events.tryEmit("Couldn't move ${file.name}: ${e.message ?: e.javaClass.simpleName}")
             }
@@ -245,7 +261,10 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         if (moves && keepParent != null) {
             jobs.trySend {
                 try {
-                    action.movedUri = storage.move(file.uri, file.name, file.mime, ses.sourceParent, keepParent)
+                    val newUri = storage.move(file.uri, file.name, file.mime, ses.sourceParent, keepParent)
+                    action.movedUri = newUri
+                    tags.rename(file.uri.toString(), newUri.toString())
+                    refreshTags()
                 } catch (e: Exception) {
                     // Couldn't move it: treat it as an ordinary keep so it doesn't reappear.
                     action.failed = true
@@ -281,6 +300,12 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                     restored = storage.move(
                         movedUri, action.file.name, action.file.mime, from, ses.sourceParent,
                     )
+                    if (action.kind == Kind.DELETE) {
+                        if (action.savedTags.isNotEmpty()) tags.setTags(restored.toString(), action.savedTags)
+                    } else {
+                        tags.rename(movedUri.toString(), restored.toString())
+                    }
+                    refreshTags()
                 } else if (action.kind == Kind.KEEP_MOVE) {
                     kept.remove(ses.source, action.file.documentId)
                 }
@@ -302,6 +327,101 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                     undoing = false,
                 )
             }
+        }
+    }
+
+    // ---------------------------------------------------------------- tags
+
+    private fun refreshTags() {
+        val d = tags.snapshot()
+        _state.update { it.copy(tagNames = d.names, tagAssign = d.assign) }
+    }
+
+    fun openTags() = _state.update { it.copy(showTags = true) }
+    fun closeTags() = _state.update { it.copy(showTags = false) }
+
+    /** Adds/removes an existing tag on the file being reviewed. */
+    fun toggleTag(tag: String) {
+        val file = _state.value.current ?: return
+        tags.toggle(file.uri.toString(), tag)
+        refreshTags()
+    }
+
+    /** Creates a tag (if new) and puts it on the file being reviewed. */
+    fun addTagToCurrent(name: String) {
+        val file = _state.value.current ?: return
+        val tag = tags.addName(name) ?: return
+        tags.tag(file.uri.toString(), tag)
+        refreshTags()
+    }
+
+    /** Removes the tag from every file. The files themselves are untouched. */
+    fun deleteTag(tag: String) {
+        tags.deleteTag(tag)
+        refreshTags()
+    }
+
+    /** Moves every file carrying [tag] into [dest], then drops that tag from them. */
+    fun moveTagged(tag: String, dest: Uri) {
+        if (_state.value.bulkBusy) return
+        val uris = tags.urisWith(tag)
+        if (uris.isEmpty()) return
+        grant(dest)
+        _state.update { it.copy(bulkBusy = true) }
+
+        jobs.trySend {
+            var ok = 0
+            var failed = 0
+            var gone = 0
+            val movedAway = HashSet<String>()
+            try {
+                val destParent = storage.treeRoot(dest)
+                val destId = DocumentsContract.getDocumentId(destParent)
+                for (u in uris) {
+                    val doc = Uri.parse(u)
+                    val info = storage.docInfo(doc)
+                    if (info == null) { // deleted or moved outside the app
+                        tags.removeFile(u)
+                        gone++
+                        continue
+                    }
+                    try {
+                        val parent = storage.parentOf(doc)
+                        if (DocumentsContract.getDocumentId(parent) == destId &&
+                            parent.authority == destParent.authority
+                        ) {
+                            tags.untag(u, tag) // already in that folder
+                            continue
+                        }
+                        val newUri = storage.move(doc, info.first, info.second, parent, destParent)
+                        tags.rename(u, newUri.toString())
+                        tags.untag(newUri.toString(), tag)
+                        movedAway += u
+                        ok++
+                    } catch (e: Exception) {
+                        failed++
+                    }
+                }
+            } catch (e: Exception) {
+                _events.tryEmit("Couldn't use that folder: ${e.message ?: e.javaClass.simpleName}")
+            }
+
+            synchronized(history) { history.clear() } // earlier undo steps may point at moved files
+            _state.update { st ->
+                val before = st.items.withIndex().count { (i, f) -> i < st.index && f.uri.toString() in movedAway }
+                st.copy(
+                    items = st.items.filterNot { it.uri.toString() in movedAway },
+                    index = (st.index - before).coerceAtLeast(0),
+                    canUndo = false,
+                    bulkBusy = false,
+                )
+            }
+            refreshTags()
+
+            val msg = StringBuilder("Moved $ok file${if (ok == 1) "" else "s"}")
+            if (failed > 0) msg.append(", $failed failed")
+            if (gone > 0) msg.append(", $gone no longer existed")
+            _events.tryEmit(msg.toString())
         }
     }
 

@@ -125,9 +125,30 @@ class MediaStorage(private val context: Context) {
         val moved = runCatching {
             DocumentsContract.moveDocument(resolver, doc, fromParent, toParent)
         }.getOrNull()
-        if (moved != null) return moved
+        // The provider answers with a URI relative to the *source* folder's access grant. Rebuild
+        // it under the destination folder's grant so the file can be moved again later (undo,
+        // bulk move) even when the destination is a separately chosen folder.
+        if (moved != null) {
+            return DocumentsContract.buildDocumentUriUsingTree(toParent, DocumentsContract.getDocumentId(moved))
+        }
         return copyThenDelete(doc, name, mime, toParent)
     }
+
+    /** Folder that contains [doc]. Works for the path-style ids used by on-device storage. */
+    fun parentOf(doc: Uri): Uri {
+        val parentId = DocumentsContract.getDocumentId(doc).substringBeforeLast('/', "")
+        require(parentId.isNotEmpty()) { "Can't find the folder this file is in" }
+        return DocumentsContract.buildDocumentUriUsingTree(doc, parentId)
+    }
+
+    /** (name, mime) of a document, or null if it no longer exists. */
+    fun docInfo(doc: Uri): Pair<String, String>? = runCatching {
+        resolver.query(
+            doc, arrayOf(Document.COLUMN_DISPLAY_NAME, Document.COLUMN_MIME_TYPE), null, null, null,
+        )?.use { c ->
+            if (c.moveToFirst()) (c.getString(0) ?: "file") to (c.getString(1) ?: "application/octet-stream") else null
+        }
+    }.getOrNull()
 
     private fun copyThenDelete(src: Uri, name: String, mime: String, toParent: Uri): Uri {
         val dst = DocumentsContract.createDocument(resolver, toParent, mime, name)

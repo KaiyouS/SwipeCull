@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -130,9 +131,12 @@ fun App(vm: SwipeViewModel) {
         if (uri != null) vm.setKeep(uri)
     }
 
+    BackHandler(enabled = state.showTags) { vm.closeTags() }
+
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when {
+                state.showTags -> TagsScreen(state, vm)
                 !state.sessionActive -> SetupScreen(
                     state = state,
                     vm = vm,
@@ -217,6 +221,10 @@ private fun SetupScreen(
             enabled = state.sourceUri != null,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Start swiping") }
+
+        OutlinedButton(onClick = { vm.openTags() }, modifier = Modifier.fillMaxWidth()) {
+            Text("Tagged files (${state.tagAssign.size})")
+        }
 
         Text(
             "Tip: Android won't let apps open a storage root or the top-level Download folder. " +
@@ -312,6 +320,10 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                         )
                     }
                     DropdownMenuItem(
+                        text = { Text("Tagged files…") },
+                        onClick = { menuOpen = false; vm.openTags() },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Change folder") },
                         onClick = { menuOpen = false; vm.endSession() },
                     )
@@ -387,6 +399,8 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             )
         }
+
+        TagRow(state, vm, Modifier.fillMaxWidth().padding(horizontal = 16.dp))
 
         // File info
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {

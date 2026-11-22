@@ -39,6 +39,13 @@ data class UiState(
     val markedInFolder: Int? = null,
     /** Document ids of files known to be favorites in the gallery. */
     val favorites: Set<String> = emptySet(),
+
+    // Tags (app-private labels, used to bulk-move files later)
+    val tagNames: List<String> = emptyList(),
+    /** File URI string -> tags on that file. */
+    val tagAssign: Map<String, Set<String>> = emptyMap(),
+    val showTags: Boolean = false,
+    val bulkBusy: Boolean = false,
 ) {
     val current: MediaFile? get() = items.getOrNull(index)
 }
