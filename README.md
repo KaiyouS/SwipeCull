@@ -5,11 +5,11 @@ Swipe through the photos and videos in a folder:
 - **Swipe left** (or tap the red button) → the file is moved into a "marked for deletion" folder
 - **Swipe right** (or tap the green button) → file stays where it is, on to the next one
 - **Undo** puts the last swipe back (moves the file back if it was marked)
-- Tap a video to pause/resume. Videos start muted (🔇 button to unmute). A seek bar under the video lets you scrub.
+- Tap a video to pause/resume. Videos start muted (speaker button on the card to unmute). A seek bar under the video lets you scrub.
 - Optional **keep folder**: swipe-right files (by default only videos) are moved there instead of staying put.
-- **Tags** (private to the app): tap "+ Tag" under the photo/video to make a tag, tap chips to put tags on/off the current file. Later open **Tagged files** (start screen or ⋮ menu), pick a tag and move every file with that tag to a folder in one go. From there you can also **Review** a tag's files (or all tagged files) with the normal swipe flow, using the same delete/keep folders. Tags can be renamed and reordered (▲ ▼) there; the chips follow that order.
+- **Tags** (private to the app): tap "Tag" under the photo/video to make a tag, tap chips to put tags on/off the current file. Later open **Tagged files** (start screen or ⋮ menu), pick a tag and move every file with that tag to a folder in one go. From there you can also **Review** a tag's files (or all tagged files) with the normal swipe flow, using the same delete/keep folders. Tags can be renamed and reordered (arrow buttons) there; the chips follow that order.
 - **Shuffle** switch (start screen, or ⋮ menu mid-session): random order instead of newest-first.
-- ☆ button on the card: asks Android to mark the file as a gallery favorite (system confirmation dialog).
+- Star button on the card: asks Android to mark the file as a gallery favorite (system confirmation dialog).
 
 Newest files come first. Files you swipe right on are remembered and hidden next time you open
 the same folder (use "Review the kept files again" to bring them back).

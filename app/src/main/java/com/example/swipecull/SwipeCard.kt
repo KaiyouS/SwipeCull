@@ -26,7 +26,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -44,6 +46,8 @@ class SwipeCardState {
     val offsetX = Animatable(0f)
     var widthPx by mutableFloatStateOf(0f)
     var locked by mutableStateOf(false)
+    /** Whether the drag is currently past the point where letting go commits the swipe. */
+    var pastThreshold = false
 
     /** Animates the card off-screen. Returns false if it was already flying away. */
     suspend fun flingOut(direction: Int): Boolean {
@@ -72,6 +76,7 @@ fun SwipeCard(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
     val currentOnSwiped by rememberUpdatedState(onSwiped)
     val currentOnTap by rememberUpdatedState(onTap)
     val currentEnabled by rememberUpdatedState(enabled)
@@ -91,6 +96,7 @@ fun SwipeCard(
             .pointerInput(state) {
                 detectHorizontalDragGestures(
                     onDragEnd = {
+                        state.pastThreshold = false
                         scope.launch {
                             val x = state.offsetX.value
                             val threshold = state.widthPx * SWIPE_THRESHOLD_FRACTION
@@ -103,12 +109,20 @@ fun SwipeCard(
                         }
                     },
                     onDragCancel = {
+                        state.pastThreshold = false
                         scope.launch { if (!state.locked) state.offsetX.animateTo(0f, spring()) }
                     },
                     onHorizontalDrag = { change, dragAmount ->
                         if (currentEnabled && !state.locked) {
                             change.consume()
-                            scope.launch { state.offsetX.snapTo(state.offsetX.value + dragAmount) }
+                            val target = state.offsetX.value + dragAmount
+                            scope.launch { state.offsetX.snapTo(target) }
+                            // A light tick when the swipe becomes "committed" (and again if you back off).
+                            val past = abs(target) > state.widthPx * SWIPE_THRESHOLD_FRACTION
+                            if (past != state.pastThreshold) {
+                                state.pastThreshold = past
+                                if (past) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            }
                         }
                     },
                 )

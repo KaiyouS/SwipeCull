@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
+import android.view.LayoutInflater
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -15,24 +16,24 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -44,14 +45,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,14 +62,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -77,7 +80,6 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
-import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.ImageLoader
 import coil.compose.AsyncImage
@@ -88,6 +90,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
+
+private val FavoriteGold = Color(0xFFFFC107)
 
 // ---------------------------------------------------------------------------- root
 
@@ -107,7 +111,10 @@ fun App(vm: SwipeViewModel) {
 
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
-        vm.events.collect { snackbar.showSnackbar(it) }
+        vm.events.collect {
+            snackbar.currentSnackbarData?.dismiss()
+            snackbar.showSnackbar(it)
+        }
     }
 
     // The system "add to favorites?" confirmation.
@@ -164,104 +171,178 @@ private fun SetupScreen(
     onPickDest: () -> Unit,
     onPickKeep: () -> Unit,
 ) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text("SwipeCull", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-        Text(
-            "Go through the photos and videos in a folder. Swipe left to move one into your " +
-                "\"marked for deletion\" folder, swipe right to keep it and see the next one.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(top = 24.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("SwipeCull", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "Swipe left to move a photo or video to your delete folder. " +
+                    "Swipe right to keep it and move on.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
-        FolderCard(
-            title = "Folder to review",
-            value = state.sourceName ?: "Not chosen yet",
-            action = if (state.sourceUri == null) "Choose" else "Change",
-            onClick = onPickSource,
-        )
-        FolderCard(
-            title = "Swipe-left files are moved to",
-            value = state.destName ?: "$DEFAULT_DEST_FOLDER  (a subfolder of the folder above)",
-            action = "Change",
-            onClick = onPickDest,
-        )
-        if (state.destUri != null) {
-            TextButton(onClick = { vm.setDest(null) }) { Text("Use the default subfolder instead") }
-        }
+            SectionLabel("Review")
+            FolderCard(
+                icon = AppIcons.Folder,
+                title = "Folder to review",
+                value = state.sourceName ?: "Tap to choose a folder",
+                isPlaceholder = state.sourceName == null,
+                note = "Only files directly inside it are shown, not subfolders.",
+                onClick = onPickSource,
+            )
 
-        FolderCard(
-            title = "Swipe-right (kept) files are moved to",
-            value = state.keepName ?: "Nowhere – kept files stay where they are",
-            action = if (state.keepUri == null) "Choose" else "Change",
-            onClick = onPickKeep,
-        )
-        if (state.keepUri != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                    Text("Only move kept videos", style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        if (state.keepVideosOnly) "Kept photos stay where they are" else "Kept photos are moved too",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = state.keepVideosOnly, onCheckedChange = vm::setKeepVideosOnly)
-            }
-            TextButton(onClick = { vm.setKeep(null) }) { Text("Don't move kept files") }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Shuffle", style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    "Go through the files in random order",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            SectionLabel("Where files go")
+            FolderCard(
+                icon = AppIcons.Delete,
+                tint = DeleteRed,
+                title = "Swipe left: delete folder",
+                value = state.destName ?: DEFAULT_DEST_FOLDER,
+                note = if (state.destUri == null) "Default: created inside the folder you review." else null,
+                onClick = onPickDest,
+                onReset = if (state.destUri != null) ({ vm.setDest(null) }) else null,
+                resetDescription = "Use the default delete folder",
+            )
+            FolderCard(
+                icon = AppIcons.Check,
+                tint = KeepGreen,
+                title = "Swipe right: keep folder",
+                value = state.keepName ?: "Not set",
+                isPlaceholder = state.keepName == null,
+                note = if (state.keepUri == null) "Optional. Kept files stay where they are unless you pick one." else null,
+                onClick = onPickKeep,
+                onReset = if (state.keepUri != null) ({ vm.setKeep(null) }) else null,
+                resetDescription = "Don't move kept files",
+            )
+            if (state.keepUri != null) {
+                SwitchRow(
+                    title = "Only move kept videos",
+                    subtitle = if (state.keepVideosOnly) "Kept photos stay where they are" else "Kept photos are moved too",
+                    checked = state.keepVideosOnly,
+                    onChange = vm::setKeepVideosOnly,
                 )
             }
-            Switch(checked = state.shuffle, onCheckedChange = { vm.toggleShuffle() })
+
+            SectionLabel("Options")
+            SwitchRow(
+                icon = AppIcons.Shuffle,
+                title = "Shuffle",
+                subtitle = "Go through the files in random order",
+                checked = state.shuffle,
+                onChange = { vm.toggleShuffle() },
+            )
+
+            Text(
+                "Android doesn't let apps open a storage root or the top-level Download folder, " +
+                    "so pick a subfolder such as DCIM/Camera or Pictures/Screenshots.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
 
-        Button(
-            onClick = { vm.start() },
-            enabled = state.sourceUri != null,
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Start swiping") }
-
-        OutlinedButton(onClick = { vm.openTags() }, modifier = Modifier.fillMaxWidth()) {
-            Text("Tagged files (${state.tagAssign.size})")
+        Surface(tonalElevation = 3.dp) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(onClick = { vm.openTags() }) {
+                    Icon(AppIcons.Label, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (state.tagAssign.isEmpty()) "Tags" else "Tags (${state.tagAssign.size})")
+                }
+                Button(
+                    onClick = { vm.start() },
+                    enabled = state.sourceUri != null,
+                    modifier = Modifier.weight(1f),
+                ) { Text("Start swiping") }
+            }
         }
-
-        Text(
-            "Tip: Android won't let apps open a storage root or the top-level Download folder. " +
-                "Pick a subfolder such as DCIM/Camera, Pictures/Screenshots or Download/<something>. " +
-                "Only files directly inside the folder are shown (not subfolders).",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
 @Composable
-private fun FolderCard(title: String, value: String, action: String, onClick: () -> Unit) {
-    OutlinedCard(Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f).padding(end = 12.dp)) {
+private fun SectionLabel(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 8.dp),
+    )
+}
+
+@Composable
+private fun FolderCard(
+    icon: ImageVector,
+    title: String,
+    value: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    tint: Color = MaterialTheme.colorScheme.primary,
+    isPlaceholder: Boolean = false,
+    note: String? = null,
+    onReset: (() -> Unit)? = null,
+    resetDescription: String = "Reset",
+) {
+    OutlinedCard(onClick = onClick, modifier = modifier.fillMaxWidth()) {
+        Row(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
+            Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
                 Text(
                     title,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(value, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    value,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (isPlaceholder) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                )
+                if (note != null) {
+                    Text(
+                        note,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-            FilledTonalButton(onClick = onClick) { Text(action) }
+            if (onReset != null) {
+                IconButton(onClick = onReset) {
+                    Icon(AppIcons.Close, contentDescription = resetDescription)
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun SwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+    icon: ImageVector? = null,
+) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 16.dp).size(24.dp))
+        }
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 
@@ -292,15 +373,8 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
     LaunchedEffect(menuOpen) { if (menuOpen) vm.refreshMarkedCount() }
     LaunchedEffect(item.uri) { vm.loadFavoriteStatus() }
 
-    val swipeLeft: suspend () -> Unit = {
-        if (cardState.flingOut(-1)) vm.markForDeletion()
-    }
-    val swipeRight: suspend () -> Unit = {
-        if (cardState.flingOut(1)) vm.keep()
-    }
-
     Column(Modifier.fillMaxSize()) {
-        // Top bar
+        // Top bar: position + counts, overflow menu
         Row(
             Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -313,38 +387,56 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                         if (state.shuffle) " · shuffled" else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Box {
                 IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "Menu")
+                    Icon(AppIcons.MoreVert, contentDescription = "Menu")
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
                         text = { Text("Undo last swipe") },
+                        leadingIcon = { Icon(AppIcons.Undo, contentDescription = null) },
                         enabled = state.canUndo && !state.undoing,
                         onClick = { menuOpen = false; vm.undo() },
                     )
-                    if (state.destUri == null) {
-                        val n = state.markedInFolder
-                        DropdownMenuItem(
-                            text = { Text(if (n != null) "Delete marked files ($n)…" else "Delete marked files…") },
-                            enabled = (n ?: 0) > 0,
-                            onClick = { menuOpen = false; confirmDelete = true },
-                        )
-                    }
                     DropdownMenuItem(
-                        text = { Text(if (state.shuffle) "Shuffle: on (tap to turn off)" else "Shuffle: off (tap to turn on)") },
+                        text = { Text(if (state.shuffle) "Shuffle: on" else "Shuffle: off") },
+                        leadingIcon = { Icon(AppIcons.Shuffle, contentDescription = null) },
                         onClick = { menuOpen = false; vm.toggleShuffle() },
                     )
                     DropdownMenuItem(
-                        text = { Text("Tagged files…") },
+                        text = { Text("Tags") },
+                        leadingIcon = { Icon(AppIcons.Label, contentDescription = null) },
                         onClick = { menuOpen = false; vm.openTags() },
                     )
                     DropdownMenuItem(
                         text = { Text("Change folder") },
+                        leadingIcon = { Icon(AppIcons.Folder, contentDescription = null) },
                         onClick = { menuOpen = false; vm.endSession() },
                     )
+                    if (state.destUri == null) {
+                        val n = state.markedInFolder
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (n != null) "Delete marked files ($n)" else "Delete marked files",
+                                    color = if ((n ?: 0) > 0) DeleteRed else Color.Unspecified,
+                                )
+                            },
+                            leadingIcon = {
+                                if ((n ?: 0) > 0) {
+                                    Icon(AppIcons.DeleteForever, contentDescription = null, tint = DeleteRed)
+                                } else {
+                                    Icon(AppIcons.DeleteForever, contentDescription = null)
+                                }
+                            },
+                            enabled = (n ?: 0) > 0,
+                            onClick = { menuOpen = false; confirmDelete = true },
+                        )
+                    }
                 }
             }
         }
@@ -381,34 +473,33 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                     )
                 }
             }
-            if (item.isVideo) {
-                if (paused) {
-                    Text("⏸", fontSize = 64.sp, color = Color.White.copy(alpha = 0.8f), modifier = Modifier.align(Alignment.Center))
-                }
+            if (item.isVideo && paused) {
                 Box(
                     Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(12.dp)
-                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                        .clickable { muted = !muted }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                ) { Text(if (muted) "🔇" else "🔊", fontSize = 20.sp) }
+                        .align(Alignment.Center)
+                        .size(72.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(AppIcons.PlayArrow, contentDescription = "Paused", tint = Color.White, modifier = Modifier.size(44.dp))
+                }
             }
-            val isFav = item.documentId in state.favorites
-            Box(
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp)
-                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                    .clickable { vm.toggleFavorite() }
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-            ) {
-                Text(
-                    if (isFav) "★" else "☆",
-                    fontSize = 26.sp,
-                    color = if (isFav) Color(0xFFFFC107) else Color.White,
+            if (item.isVideo) {
+                ScrimIconButton(
+                    icon = if (muted) AppIcons.VolumeOff else AppIcons.VolumeUp,
+                    description = if (muted) "Unmute" else "Mute",
+                    modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+                    onClick = { muted = !muted },
                 )
             }
+            val isFav = item.documentId in state.favorites
+            ScrimIconButton(
+                icon = if (isFav) AppIcons.Star else AppIcons.StarBorder,
+                description = if (isFav) "Remove from favorites" else "Add to favorites",
+                tint = if (isFav) FavoriteGold else Color.White,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+                onClick = { vm.toggleFavorite() },
+            )
         }
 
         if (item.isVideo) {
@@ -421,7 +512,7 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
         TagRow(state, vm, Modifier.fillMaxWidth().padding(horizontal = 16.dp))
 
         // File info
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 6.dp)) {
             Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
                 fileMeta(item),
@@ -430,27 +521,31 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
             )
         }
 
-        // Buttons
+        // Action buttons
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FilledIconButton(
-                onClick = { scope.launch { swipeLeft() } },
+                onClick = { scope.launch { if (cardState.flingOut(-1)) vm.markForDeletion() } },
                 enabled = !state.undoing,
-                modifier = Modifier.size(68.dp),
+                modifier = Modifier.size(64.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = DeleteRed, contentColor = Color.White),
-            ) { Icon(Icons.Default.Delete, contentDescription = "Move to marked-for-deletion folder", modifier = Modifier.size(32.dp)) }
+            ) { Icon(AppIcons.Delete, contentDescription = "Move to the delete folder", modifier = Modifier.size(30.dp)) }
 
-            OutlinedButton(onClick = { vm.undo() }, enabled = state.canUndo && !state.undoing) { Text("Undo") }
+            FilledTonalIconButton(
+                onClick = { vm.undo() },
+                enabled = state.canUndo && !state.undoing,
+                modifier = Modifier.size(52.dp),
+            ) { Icon(AppIcons.Undo, contentDescription = "Undo last swipe") }
 
             FilledIconButton(
-                onClick = { scope.launch { swipeRight() } },
+                onClick = { scope.launch { if (cardState.flingOut(1)) vm.keep() } },
                 enabled = !state.undoing,
-                modifier = Modifier.size(68.dp),
+                modifier = Modifier.size(64.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = KeepGreen, contentColor = Color.White),
-            ) { Icon(Icons.Default.Check, contentDescription = "Keep", modifier = Modifier.size(32.dp)) }
+            ) { Icon(AppIcons.Check, contentDescription = "Keep", modifier = Modifier.size(30.dp)) }
         }
     }
 
@@ -460,6 +555,27 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
             onConfirm = { confirmDelete = false; vm.deleteMarkedPermanently() },
             onDismiss = { confirmDelete = false },
         )
+    }
+}
+
+/** A 44dp round button with a dark backing, readable on top of any photo or video. */
+@Composable
+private fun ScrimIconButton(
+    icon: ImageVector,
+    description: String,
+    modifier: Modifier = Modifier,
+    tint: Color = Color.White,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.55f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(24.dp))
     }
 }
 
@@ -500,7 +616,7 @@ private fun VideoPlayer(
             prepare()
         }
     }
-    androidx.compose.runtime.DisposableEffect(player) {
+    DisposableEffect(player) {
         player.setSeekParameters(SeekParameters.CLOSEST_SYNC) // fast scrubbing on big videos
         onPlayer(player)
         onDispose { player.release() }
@@ -513,10 +629,9 @@ private fun VideoPlayer(
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
-            PlayerView(ctx).apply {
-                useController = false
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                this.player = player
+            // Inflated from XML so it can use a TextureView (see res/layout/player_view.xml).
+            (LayoutInflater.from(ctx).inflate(R.layout.player_view, null) as PlayerView).also {
+                it.player = player
             }
         },
     )
@@ -572,27 +687,54 @@ private fun formatTime(ms: Long): String {
 private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
     var confirmDelete by remember { mutableStateOf(false) }
     LaunchedEffect(state.movedCount) { vm.refreshMarkedCount() }
+    val tagReview = state.reviewLabel != null
+    val nothing = state.items.isEmpty()
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
+        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
     ) {
-        Text("All caught up", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Icon(
+            AppIcons.CheckCircle,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(72.dp),
+        )
         Text(
-            if (state.items.isEmpty()) "Nothing new to review in this folder."
-            else "${state.movedCount} marked for deletion · ${state.keptCount} kept",
-            style = MaterialTheme.typography.bodyLarge,
+            if (nothing) (if (tagReview) "No files to review" else "Nothing new to review")
+            else (if (tagReview) "Tag review finished" else "All caught up"),
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
         )
+
+        if (nothing) {
+            Text(
+                if (tagReview) "No files with this tag could be found any more."
+                else "Every file in this folder has been swiped already.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(40.dp)) {
+                StatBlock(AppIcons.Delete, DeleteRed, state.movedCount, "marked")
+                StatBlock(AppIcons.Check, KeepGreen, state.keptCount, "kept")
+            }
+        }
 
         val marked = state.markedInFolder ?: 0
         if (state.destUri == null && marked > 0) {
             Button(
                 onClick = { confirmDelete = true },
-                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = DeleteRed, contentColor = Color.White),
+                colors = ButtonDefaults.buttonColors(containerColor = DeleteRed, contentColor = Color.White),
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Delete $marked marked files permanently") }
+            ) {
+                Icon(AppIcons.DeleteForever, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Delete $marked marked files")
+            }
         }
         if (state.destUri != null && state.movedCount > 0) {
             Text(
@@ -602,7 +744,6 @@ private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
                 textAlign = TextAlign.Center,
             )
         }
-
         if (state.keepUri != null && state.keptCount > 0) {
             Text(
                 "Kept ${if (state.keepVideosOnly) "videos" else "files"} were moved to ${state.keepName}.",
@@ -612,18 +753,25 @@ private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
             )
         }
 
+        Spacer(Modifier.height(4.dp))
         OutlinedButton(
             onClick = { vm.undo() },
             enabled = state.canUndo && !state.undoing,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Undo last swipe") }
-        if (state.reviewLabel == null) {
+        ) {
+            Icon(AppIcons.Undo, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Undo last swipe")
+        }
+        if (!tagReview) {
             OutlinedButton(onClick = { vm.resetKept() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Review the kept files again")
             }
         } else {
             OutlinedButton(onClick = { vm.openTags() }, modifier = Modifier.fillMaxWidth()) {
-                Text("Back to tagged files")
+                Icon(AppIcons.Label, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Back to tags")
             }
         }
         TextButton(onClick = { vm.endSession() }) { Text("Choose another folder") }
@@ -639,9 +787,19 @@ private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
 }
 
 @Composable
+private fun StatBlock(icon: ImageVector, color: Color, count: Int, label: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
+        Text("$count", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
 private fun ConfirmDeleteDialog(count: Int, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        icon = { Icon(AppIcons.DeleteForever, contentDescription = null, tint = DeleteRed) },
         title = { Text("Delete $count files permanently?") },
         text = {
             Text(
