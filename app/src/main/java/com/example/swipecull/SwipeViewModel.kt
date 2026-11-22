@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentSender
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +29,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     private val storage = MediaStorage(app)
     private val kept = KeptStore(app)
     private val tags = TagStore(app)
+    private val bin = BinStore(app)
     private val prefs = app.getSharedPreferences("swipecull", Context.MODE_PRIVATE)
 
     private val _state = MutableStateFlow(UiState())
@@ -41,6 +43,11 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     val favRequests: SharedFlow<IntentSender> = _favRequests.asSharedFlow()
     @Volatile private var pendingFav: Pair<String, Boolean>? = null
 
+    /** The system "move these to the bin?" confirmation the UI should show. */
+    private val _trashRequests = MutableSharedFlow<IntentSender>(extraBufferCapacity = 1)
+    val trashRequests: SharedFlow<IntentSender> = _trashRequests.asSharedFlow()
+    @Volatile private var pendingTrash: List<BinStore.Item>? = null
+
     private class Session(
         val source: Uri,
         val sourceParent: Uri,
@@ -52,7 +59,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val tagReview: Boolean = false,
     )
 
-    private enum class Kind { DELETE, KEEP_MOVE, KEEP_STAY }
+    private enum class Kind { DELETE, KEEP_MOVE, KEEP_STAY, SKIP, BIN }
 
     private class Action(val index: Int, val file: MediaFile, val kind: Kind) {
         @Volatile var movedUri: Uri? = null
@@ -76,6 +83,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
 
         refreshTags()
         _state.update { it.copy(shuffle = prefs.getBoolean(KEY_SHUFFLE, false)) }
+        refreshBin()
 
         val src = prefs.getString(KEY_SOURCE, null)?.let(Uri::parse)
         val dst = prefs.getString(KEY_DEST, null)?.let(Uri::parse)
@@ -186,6 +194,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 sessionActive = true, loading = true, items = emptyList(), index = 0,
                 movedCount = 0, keptCount = 0, canUndo = false, undoing = false,
                 markedInFolder = null, favorites = emptySet(), reviewLabel = null,
+                skippedCount = 0, binnedCount = 0,
             )
         }
 
@@ -196,7 +205,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                     val destParent = dst?.let { storage.treeRoot(it) }
                         ?: storage.findChildDir(root, DEFAULT_DEST_FOLDER)
                     val keepParent = keep?.let { storage.treeRoot(it) }
-                    val media = storage.listMedia(src, kept.get(src))
+                    val media = storage.listMedia(src, kept.get(src) + bin.docIds())
                     Session(src, root, destParent, dst != null, keepParent, keepVideosOnly) to
                         if (_state.value.shuffle) media.shuffled() else media
                 }
@@ -316,6 +325,27 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         if (s.undoing || s.loading) return
         val action = synchronized(history) { history.removeLastOrNull() } ?: return
 
+        if (action.kind == Kind.SKIP) {
+            _state.update {
+                it.copy(index = action.index, skippedCount = it.skippedCount - 1, canUndo = hasHistory())
+            }
+            return
+        }
+
+        if (action.kind == Kind.BIN) {
+            val uri = action.file.uri.toString()
+            bin.remove(uri)
+            if (action.savedTags.isNotEmpty()) tags.setTags(uri, action.savedTags)
+            refreshTags()
+            _state.update {
+                it.copy(
+                    index = action.index, binnedCount = it.binnedCount - 1,
+                    binCount = bin.items().size, canUndo = hasHistory(),
+                )
+            }
+            return
+        }
+
         if (action.kind == Kind.KEEP_STAY) {
             kept.remove(ses.source, action.file.documentId)
             _state.update {
@@ -363,6 +393,117 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+    // ---------------------------------------------------------------- skip & bin
+
+    /** Next file without keeping or deleting anything (it will come back next run). */
+    fun skip() {
+        val s = _state.value
+        val file = s.current ?: return
+        if (session == null || s.undoing) return
+        synchronized(history) { history.addLast(Action(s.index, file, Kind.SKIP)) }
+        _state.update { it.copy(index = it.index + 1, skippedCount = it.skippedCount + 1, canUndo = true) }
+    }
+
+    /**
+     * For files you're sure about: queues the file for the system recycle bin and moves on.
+     * Nothing is touched yet; [sendBinToTrash] moves the whole queue in one confirmation.
+     */
+    fun binCurrent() {
+        val s = _state.value
+        val file = s.current ?: return
+        if (session == null || s.undoing) return
+
+        val uri = file.uri.toString()
+        val action = Action(s.index, file, Kind.BIN)
+        action.savedTags = tags.tagsOf(uri)
+        if (action.savedTags.isNotEmpty()) {
+            tags.removeFile(uri)
+            refreshTags()
+        }
+        bin.add(uri, file.isVideo)
+        synchronized(history) { history.addLast(action) }
+        _state.update {
+            it.copy(
+                index = it.index + 1, binnedCount = it.binnedCount + 1,
+                binCount = bin.items().size, canUndo = true,
+            )
+        }
+    }
+
+    private fun refreshBin() {
+        val n = bin.items().size
+        _state.update { it.copy(binCount = n) }
+    }
+
+    fun openBinDialog() {
+        refreshBin()
+        _state.update { it.copy(showBinDialog = true) }
+    }
+
+    fun closeBinDialog() = _state.update { it.copy(showBinDialog = false) }
+
+    /** Takes everything out of the queue without touching the files; they'll be reviewable again. */
+    fun forgetBinQueue() {
+        bin.clear()
+        refreshBin()
+        closeBinDialog()
+        _events.tryEmit("Removed from the bin queue. They'll show up for review again next run.")
+    }
+
+    /** Asks Android (one confirmation for the whole batch) to move the queued files to the recycle bin. */
+    fun sendBinToTrash() {
+        closeBinDialog()
+        if (!Favorites.supported) {
+            _events.tryEmit("The bin needs Android 11 or newer")
+            return
+        }
+        val items = bin.items()
+        if (items.isEmpty()) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val ready = ArrayList<BinStore.Item>()
+                val uris = ArrayList<Uri>()
+                var unknown = 0
+                for (item in items) {
+                    val doc = Uri.parse(item.uri)
+                    if (storage.docInfo(doc) == null) { // already gone
+                        bin.remove(item.uri)
+                        continue
+                    }
+                    val media = Favorites.mediaItemUri(appCtx, doc, DocumentsContract.getDocumentId(doc), item.video)
+                    if (media == null) unknown++ else { ready += item; uris += media }
+                }
+                refreshBin()
+                if (uris.isEmpty()) {
+                    _events.tryEmit(
+                        if (unknown > 0) "Android's media database doesn't know these files yet"
+                        else "Nothing left to move to the bin",
+                    )
+                    return@launch
+                }
+                val pi = try {
+                    MediaStore.createTrashRequest(appCtx.contentResolver, uris, true)
+                } catch (e: Exception) {
+                    throw IllegalStateException("${e.message} [${uris.first()}]", e)
+                }
+                pendingTrash = ready
+                _trashRequests.emit(pi.intentSender)
+            } catch (e: Exception) {
+                _events.tryEmit("Couldn't send to the bin: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun trashResult(approved: Boolean) {
+        val items = pendingTrash ?: return
+        pendingTrash = null
+        if (!approved) return
+        bin.removeAll(items.map { it.uri })
+        refreshBin()
+        _events.tryEmit("Moved ${items.size} file${if (items.size == 1) "" else "s"} to the bin")
     }
 
     // ---------------------------------------------------------------- tags
@@ -421,7 +562,9 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
             _events.tryEmit("Choose a folder to review first (the delete folder lives there by default)")
             return
         }
-        val uris = if (tag == null) tags.snapshot().assign.keys.toList() else tags.urisWith(tag)
+        val queuedForBin = bin.items().map { it.uri }.toSet()
+        val uris = (if (tag == null) tags.snapshot().assign.keys.toList() else tags.urisWith(tag))
+            .filter { it !in queuedForBin }
         if (uris.isEmpty()) {
             _events.tryEmit("No tagged files")
             return
@@ -438,6 +581,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 showTags = false, sessionActive = true, loading = true, items = emptyList(), index = 0,
                 movedCount = 0, keptCount = 0, canUndo = false, undoing = false,
                 markedInFolder = null, favorites = emptySet(), reviewLabel = tag ?: "All tagged",
+                skippedCount = 0, binnedCount = 0,
             )
         }
 

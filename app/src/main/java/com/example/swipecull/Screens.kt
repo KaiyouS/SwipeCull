@@ -125,6 +125,14 @@ fun App(vm: SwipeViewModel) {
         vm.favRequests.collect { favLauncher.launch(IntentSenderRequest.Builder(it).build()) }
     }
 
+    // The system "move these to the bin?" confirmation.
+    val trashLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        vm.trashResult(result.resultCode == Activity.RESULT_OK)
+    }
+    LaunchedEffect(Unit) {
+        vm.trashRequests.collect { trashLauncher.launch(IntentSenderRequest.Builder(it).build()) }
+    }
+
     val startHint = remember {
         DocumentsContract.buildTreeDocumentUri("com.android.externalstorage.documents", "primary:DCIM")
     }
@@ -159,6 +167,38 @@ fun App(vm: SwipeViewModel) {
             }
         }
     }
+
+    if (state.showBinDialog) {
+        BinQueueDialog(
+            count = state.binCount,
+            onSend = vm::sendBinToTrash,
+            onForget = vm::forgetBinQueue,
+            onDismiss = vm::closeBinDialog,
+        )
+    }
+}
+
+@Composable
+private fun BinQueueDialog(count: Int, onSend: () -> Unit, onForget: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(AppIcons.DeleteForever, contentDescription = null, tint = DeleteRed) },
+        title = { Text("$count file${if (count == 1) "" else "s"} waiting for the bin") },
+        text = {
+            Text(
+                "Android will ask you to confirm once, then move them to the recycle bin " +
+                    "(usually kept for 30 days before they're deleted for good). " +
+                    "\"Un-queue\" leaves the files alone and lets you review them again.",
+            )
+        },
+        confirmButton = { TextButton(onClick = onSend) { Text("Send to bin", color = DeleteRed) } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onForget) { Text("Un-queue") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------- setup
@@ -187,6 +227,25 @@ private fun SetupScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            if (state.binCount > 0) {
+                OutlinedCard(onClick = { vm.openBinDialog() }, modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(AppIcons.DeleteForever, contentDescription = null, tint = DeleteRed, modifier = Modifier.size(24.dp))
+                        Column(Modifier.padding(start = 16.dp)) {
+                            Text(
+                                "${state.binCount} file${if (state.binCount == 1) "" else "s"} waiting for the bin",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                "Tap to move them to the recycle bin",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
 
             SectionLabel("Review")
             FolderCard(
@@ -382,9 +441,7 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
             Column(Modifier.weight(1f)) {
                 Text("${state.index + 1} / ${state.items.size}", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    (state.reviewLabel?.let { "Tag: $it · " } ?: "") +
-                        "${state.movedCount} marked · ${state.keptCount} kept" +
-                        if (state.shuffle) " · shuffled" else "",
+                    statusLine(state),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -412,6 +469,13 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                         leadingIcon = { Icon(AppIcons.Label, contentDescription = null) },
                         onClick = { menuOpen = false; vm.openTags() },
                     )
+                    if (state.binCount > 0) {
+                        DropdownMenuItem(
+                            text = { Text("Bin: ${state.binCount} waiting", color = DeleteRed) },
+                            leadingIcon = { Icon(AppIcons.DeleteForever, contentDescription = null, tint = DeleteRed) },
+                            onClick = { menuOpen = false; vm.openBinDialog() },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Change folder") },
                         leadingIcon = { Icon(AppIcons.Folder, contentDescription = null) },
@@ -521,31 +585,49 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
             )
         }
 
-        // Action buttons
+        // Action buttons (left = destructive, middle = neutral, right = keep)
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 14.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+            verticalAlignment = Alignment.Top,
         ) {
-            FilledIconButton(
-                onClick = { scope.launch { if (cardState.flingOut(-1)) vm.markForDeletion() } },
-                enabled = !state.undoing,
-                modifier = Modifier.size(64.dp),
-                colors = IconButtonDefaults.filledIconButtonColors(containerColor = DeleteRed, contentColor = Color.White),
-            ) { Icon(AppIcons.Delete, contentDescription = "Move to the delete folder", modifier = Modifier.size(30.dp)) }
-
-            FilledTonalIconButton(
-                onClick = { vm.undo() },
-                enabled = state.canUndo && !state.undoing,
-                modifier = Modifier.size(52.dp),
-            ) { Icon(AppIcons.Undo, contentDescription = "Undo last swipe") }
-
-            FilledIconButton(
-                onClick = { scope.launch { if (cardState.flingOut(1)) vm.keep() } },
-                enabled = !state.undoing,
-                modifier = Modifier.size(64.dp),
-                colors = IconButtonDefaults.filledIconButtonColors(containerColor = KeepGreen, contentColor = Color.White),
-            ) { Icon(AppIcons.Check, contentDescription = "Keep", modifier = Modifier.size(30.dp)) }
+            ActionSlot("Bin") {
+                FilledTonalIconButton(
+                    onClick = { scope.launch { if (cardState.flingOut(-1)) vm.binCurrent() } },
+                    enabled = !state.undoing,
+                    modifier = Modifier.size(48.dp),
+                ) { Icon(AppIcons.DeleteForever, contentDescription = "Send to the bin (recycle bin)", tint = DeleteRed) }
+            }
+            ActionSlot("Delete") {
+                FilledIconButton(
+                    onClick = { scope.launch { if (cardState.flingOut(-1)) vm.markForDeletion() } },
+                    enabled = !state.undoing,
+                    modifier = Modifier.size(64.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = DeleteRed, contentColor = Color.White),
+                ) { Icon(AppIcons.Delete, contentDescription = "Move to the delete folder", modifier = Modifier.size(30.dp)) }
+            }
+            ActionSlot("Undo") {
+                FilledTonalIconButton(
+                    onClick = { vm.undo() },
+                    enabled = state.canUndo && !state.undoing,
+                    modifier = Modifier.size(48.dp),
+                ) { Icon(AppIcons.Undo, contentDescription = "Undo last swipe") }
+            }
+            ActionSlot("Skip") {
+                FilledTonalIconButton(
+                    onClick = { if (!cardState.locked) vm.skip() },
+                    enabled = !state.undoing,
+                    modifier = Modifier.size(48.dp),
+                ) { Icon(AppIcons.SkipNext, contentDescription = "Skip to the next file without keeping or deleting") }
+            }
+            ActionSlot("Keep") {
+                FilledIconButton(
+                    onClick = { scope.launch { if (cardState.flingOut(1)) vm.keep() } },
+                    enabled = !state.undoing,
+                    modifier = Modifier.size(64.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = KeepGreen, contentColor = Color.White),
+                ) { Icon(AppIcons.Check, contentDescription = "Keep", modifier = Modifier.size(30.dp)) }
+            }
         }
     }
 
@@ -556,6 +638,30 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
             onDismiss = { confirmDelete = false },
         )
     }
+}
+
+/** One action button in a fixed 64dp slot with a caption, so differently sized buttons line up. */
+@Composable
+private fun ActionSlot(label: String, button: @Composable () -> Unit) {
+    Column(Modifier.width(64.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(64.dp), contentAlignment = Alignment.Center) { button() }
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** "Tag: travel · 3 marked · 2 kept · shuffled", showing only what's non-zero. */
+private fun statusLine(state: UiState): String {
+    val counts = listOf(
+        state.movedCount to "marked",
+        state.keptCount to "kept",
+        state.skippedCount to "skipped",
+        state.binnedCount to "binned",
+    ).filter { it.first > 0 }.map { "${it.first} ${it.second}" }
+    return listOfNotNull(
+        state.reviewLabel?.let { "Tag: $it" },
+        counts.takeIf { it.isNotEmpty() }?.joinToString(" · "),
+        if (state.shuffle) "shuffled" else null,
+    ).joinToString(" · ").ifEmpty { "Swipe or tap to begin" }
 }
 
 /** A 44dp round button with a dark backing, readable on top of any photo or video. */
@@ -718,9 +824,31 @@ private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
                 textAlign = TextAlign.Center,
             )
         } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(40.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
                 StatBlock(AppIcons.Delete, DeleteRed, state.movedCount, "marked")
                 StatBlock(AppIcons.Check, KeepGreen, state.keptCount, "kept")
+                if (state.skippedCount > 0) {
+                    StatBlock(AppIcons.SkipNext, MaterialTheme.colorScheme.onSurfaceVariant, state.skippedCount, "skipped")
+                }
+                if (state.binnedCount > 0) {
+                    StatBlock(AppIcons.DeleteForever, DeleteRed, state.binnedCount, "binned")
+                }
+            }
+            if (state.skippedCount > 0) {
+                Text(
+                    "Skipped files will show up again next time you start.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+
+        if (state.binCount > 0) {
+            Button(onClick = { vm.openBinDialog() }, modifier = Modifier.fillMaxWidth()) {
+                Icon(AppIcons.DeleteForever, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Send ${state.binCount} to the bin")
             }
         }
 

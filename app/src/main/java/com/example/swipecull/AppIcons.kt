@@ -45,6 +45,7 @@ object AppIcons {
         )
     }
     val PlayArrow by lazy { icon("PlayArrow", "M8,5v14l11,-7z") }
+    val SkipNext by lazy { icon("SkipNext", "M6,18l8.5,-6L6,6v12zM16,6v12h2V6h-2z") }
     val ArrowUpward by lazy {
         icon("ArrowUpward", "M4,12l1.41,1.41L11,7.83V20h2V7.83l5.58,5.59L20,12l-8,-8 -8,8z")
     }

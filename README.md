@@ -8,6 +8,8 @@ Swipe through the photos and videos in a folder:
 - Tap a video to pause/resume. Videos start muted (speaker button on the card to unmute). A seek bar under the video lets you scrub.
 - Optional **keep folder**: swipe-right files (by default only videos) are moved there instead of staying put.
 - **Tags** (private to the app): tap "Tag" under the photo/video to make a tag, tap chips to put tags on/off the current file. Later open **Tagged files** (start screen or ⋮ menu), pick a tag and move every file with that tag to a folder in one go. From there you can also **Review** a tag's files (or all tagged files) with the normal swipe flow, using the same delete/keep folders. Tags can be renamed and reordered (arrow buttons) there; the chips follow that order.
+- **Skip** button: next file without keeping or deleting (handy while tagging); skipped files come back next run.
+- **Bin** button: queues a file for the phone's recycle bin and hides it from review. Send the whole queue in one confirmation (menu, finished screen or start screen).
 - **Shuffle** switch (start screen, or ⋮ menu mid-session): random order instead of newest-first.
 - Star button on the card: asks Android to mark the file as a gallery favorite (system confirmation dialog).
 

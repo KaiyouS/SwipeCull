@@ -33,6 +33,12 @@ data class UiState(
     val index: Int = 0,
     val movedCount: Int = 0,
     val keptCount: Int = 0,
+    val skippedCount: Int = 0,
+    /** Files sent to the bin queue during this run. */
+    val binnedCount: Int = 0,
+    /** Files (from any run) waiting to be moved to the system recycle bin. */
+    val binCount: Int = 0,
+    val showBinDialog: Boolean = false,
     val canUndo: Boolean = false,
     val undoing: Boolean = false,
     /** Number of files currently sitting in the default marked folder (null = unknown / n/a). */
