@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,3 +28,11 @@ jobs:
         with:
           name: SwipeCull-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish release with APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk SwipeCull.apk
+          gh release create "v1.0-build${{ github.run_number }}" SwipeCull.apk \
+            --title "SwipeCull build ${{ github.run_number }}" \
+            --notes "Debug APK. Download SwipeCull.apk on your phone and open it to install."
