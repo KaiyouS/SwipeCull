@@ -1,10 +1,12 @@
 package com.example.swipecull
 
+import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -38,14 +40,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -65,9 +71,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.ImageLoader
@@ -75,6 +83,7 @@ import coil.compose.AsyncImage
 import coil.decode.GifDecoder
 import coil.decode.ImageDecoderDecoder
 import coil.request.ImageRequest
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -100,6 +109,14 @@ fun App(vm: SwipeViewModel) {
         vm.events.collect { snackbar.showSnackbar(it) }
     }
 
+    // The system "add to favorites?" confirmation.
+    val favLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        vm.favoriteResult(result.resultCode == Activity.RESULT_OK)
+    }
+    LaunchedEffect(Unit) {
+        vm.favRequests.collect { favLauncher.launch(IntentSenderRequest.Builder(it).build()) }
+    }
+
     val startHint = remember {
         DocumentsContract.buildTreeDocumentUri("com.android.externalstorage.documents", "primary:DCIM")
     }
@@ -108,6 +125,9 @@ fun App(vm: SwipeViewModel) {
     }
     val pickDest = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) vm.setDest(uri)
+    }
+    val pickKeep = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) vm.setKeep(uri)
     }
 
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
@@ -118,6 +138,7 @@ fun App(vm: SwipeViewModel) {
                     vm = vm,
                     onPickSource = { pickSource.launch(startHint) },
                     onPickDest = { pickDest.launch(startHint) },
+                    onPickKeep = { pickKeep.launch(startHint) },
                 )
                 state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
@@ -137,6 +158,7 @@ private fun SetupScreen(
     vm: SwipeViewModel,
     onPickSource: () -> Unit,
     onPickDest: () -> Unit,
+    onPickKeep: () -> Unit,
 ) {
     Column(
         Modifier
@@ -167,6 +189,27 @@ private fun SetupScreen(
         )
         if (state.destUri != null) {
             TextButton(onClick = { vm.setDest(null) }) { Text("Use the default subfolder instead") }
+        }
+
+        FolderCard(
+            title = "Swipe-right (kept) files are moved to",
+            value = state.keepName ?: "Nowhere – kept files stay where they are",
+            action = if (state.keepUri == null) "Choose" else "Change",
+            onClick = onPickKeep,
+        )
+        if (state.keepUri != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Only move kept videos", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        if (state.keepVideosOnly) "Kept photos stay where they are" else "Kept photos are moved too",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = state.keepVideosOnly, onCheckedChange = vm::setKeepVideosOnly)
+            }
+            TextButton(onClick = { vm.setKeep(null) }) { Text("Don't move kept files") }
         }
 
         Button(
@@ -215,6 +258,8 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
     var paused by remember(item.uri) { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    // Filled in by the video player so the seek bar (outside the swipe card) can drive it.
+    val playerHolder = remember(item.uri) { mutableStateOf<ExoPlayer?>(null) }
 
     // Warm the cache for the next couple of photos so swiping feels instant.
     LaunchedEffect(state.index) {
@@ -225,6 +270,7 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
         }
     }
     LaunchedEffect(menuOpen) { if (menuOpen) vm.refreshMarkedCount() }
+    LaunchedEffect(item.uri) { vm.loadFavoriteStatus() }
 
     val swipeLeft: suspend () -> Unit = {
         if (cardState.flingOut(-1)) vm.markForDeletion()
@@ -291,6 +337,7 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                         uri = item.uri,
                         muted = muted,
                         paused = paused,
+                        onPlayer = { playerHolder.value = it },
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
@@ -317,6 +364,28 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                 ) { Text(if (muted) "🔇" else "🔊", fontSize = 20.sp) }
             }
+            val isFav = item.documentId in state.favorites
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                    .clickable { vm.toggleFavorite() }
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    if (isFav) "★" else "☆",
+                    fontSize = 26.sp,
+                    color = if (isFav) Color(0xFFFFC107) else Color.White,
+                )
+            }
+        }
+
+        if (item.isVideo) {
+            VideoSeekBar(
+                player = playerHolder.value,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            )
         }
 
         // File info
@@ -384,7 +453,13 @@ private fun formatSize(bytes: Long): String = when {
 // ---------------------------------------------------------------------------- video
 
 @Composable
-private fun VideoPlayer(uri: Uri, muted: Boolean, paused: Boolean, modifier: Modifier = Modifier) {
+private fun VideoPlayer(
+    uri: Uri,
+    muted: Boolean,
+    paused: Boolean,
+    onPlayer: (ExoPlayer) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     val player = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
@@ -393,7 +468,11 @@ private fun VideoPlayer(uri: Uri, muted: Boolean, paused: Boolean, modifier: Mod
             prepare()
         }
     }
-    androidx.compose.runtime.DisposableEffect(player) { onDispose { player.release() } }
+    androidx.compose.runtime.DisposableEffect(player) {
+        player.setSeekParameters(SeekParameters.CLOSEST_SYNC) // fast scrubbing on big videos
+        onPlayer(player)
+        onDispose { player.release() }
+    }
     LaunchedEffect(player, muted) { player.volume = if (muted) 0f else 1f }
     LaunchedEffect(player, paused) { player.playWhenReady = !paused }
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { player.pause() }
@@ -409,6 +488,50 @@ private fun VideoPlayer(uri: Uri, muted: Boolean, paused: Boolean, modifier: Mod
             }
         },
     )
+}
+
+@Composable
+private fun VideoSeekBar(player: ExoPlayer?, modifier: Modifier = Modifier) {
+    var position by remember(player) { mutableLongStateOf(0L) }
+    var duration by remember(player) { mutableLongStateOf(0L) }
+    var dragging by remember(player) { mutableStateOf(false) }
+
+    LaunchedEffect(player) {
+        if (player == null) return@LaunchedEffect
+        while (true) {
+            val d = player.duration
+            duration = if (d == C.TIME_UNSET || d < 0) 0L else d
+            if (!dragging) position = player.currentPosition.coerceAtLeast(0L)
+            delay(150)
+        }
+    }
+
+    val fraction = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Text(formatTime(position), style = MaterialTheme.typography.labelMedium)
+        Slider(
+            value = fraction,
+            onValueChange = { f ->
+                if (duration > 0) {
+                    dragging = true
+                    position = (f * duration).toLong()
+                    player?.seekTo(position)
+                }
+            },
+            onValueChangeFinished = { dragging = false },
+            enabled = player != null && duration > 0,
+            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+        )
+        Text(formatTime(duration), style = MaterialTheme.typography.labelMedium)
+    }
+}
+
+private fun formatTime(ms: Long): String {
+    val total = ms / 1000
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
 // ---------------------------------------------------------------------------- done
@@ -442,6 +565,15 @@ private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
         if (state.destUri != null && state.movedCount > 0) {
             Text(
                 "Your marked files are in ${state.destName}. Delete them from the Files app when you're ready.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+
+        if (state.keepUri != null && state.keptCount > 0) {
+            Text(
+                "Kept ${if (state.keepVideosOnly) "videos" else "files"} were moved to ${state.keepName}.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,

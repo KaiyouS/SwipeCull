@@ -5,7 +5,9 @@ Swipe through the photos and videos in a folder:
 - **Swipe left** (or tap the red button) → the file is moved into a "marked for deletion" folder
 - **Swipe right** (or tap the green button) → file stays where it is, on to the next one
 - **Undo** puts the last swipe back (moves the file back if it was marked)
-- Tap a video to pause/resume. Videos start muted (🔇 button to unmute).
+- Tap a video to pause/resume. Videos start muted (🔇 button to unmute). A seek bar under the video lets you scrub.
+- Optional **keep folder**: swipe-right files (by default only videos) are moved there instead of staying put.
+- ☆ button on the card: asks Android to mark the file as a gallery favorite (system confirmation dialog).
 
 Newest files come first. Files you swipe right on are remembered and hidden next time you open
 the same folder (use "Review the kept files again" to bring them back).

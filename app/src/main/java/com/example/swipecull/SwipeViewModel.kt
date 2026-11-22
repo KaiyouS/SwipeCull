@@ -3,6 +3,7 @@ package com.example.swipecull
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.content.IntentSender
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -22,6 +23,7 @@ const val DEFAULT_DEST_FOLDER = "_marked_for_delete"
 
 class SwipeViewModel(app: Application) : AndroidViewModel(app) {
 
+    private val appCtx: Application = app
     private val storage = MediaStorage(app)
     private val kept = KeptStore(app)
     private val prefs = app.getSharedPreferences("swipecull", Context.MODE_PRIVATE)
@@ -32,14 +34,23 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val events: SharedFlow<String> = _events.asSharedFlow()
 
+    /** System "add to favorites?" dialogs the UI should show. */
+    private val _favRequests = MutableSharedFlow<IntentSender>(extraBufferCapacity = 1)
+    val favRequests: SharedFlow<IntentSender> = _favRequests.asSharedFlow()
+    @Volatile private var pendingFav: Pair<String, Boolean>? = null
+
     private class Session(
         val source: Uri,
         val sourceParent: Uri,
         @Volatile var destParent: Uri?,
         val customDest: Boolean,
+        val keepParent: Uri?,
+        val keepVideosOnly: Boolean,
     )
 
-    private class Action(val index: Int, val file: MediaFile, val moved: Boolean) {
+    private enum class Kind { DELETE, KEEP_MOVE, KEEP_STAY }
+
+    private class Action(val index: Int, val file: MediaFile, val kind: Kind) {
         @Volatile var movedUri: Uri? = null
         @Volatile var failed: Boolean = false
     }
@@ -57,14 +68,19 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
 
         val src = prefs.getString(KEY_SOURCE, null)?.let(Uri::parse)
         val dst = prefs.getString(KEY_DEST, null)?.let(Uri::parse)
+        val keep = prefs.getString(KEY_KEEP, null)?.let(Uri::parse)
         if (src != null && storage.hasPersistedAccess(src)) {
             val validDst = dst?.takeIf { storage.hasPersistedAccess(it) }
+            val validKeep = keep?.takeIf { storage.hasPersistedAccess(it) }
             _state.update {
                 it.copy(
                     sourceUri = src,
                     sourceName = storage.friendlyName(src),
                     destUri = validDst,
                     destName = validDst?.let { d -> storage.friendlyName(d) },
+                    keepUri = validKeep,
+                    keepName = validKeep?.let { k -> storage.friendlyName(k) },
+                    keepVideosOnly = prefs.getBoolean(KEY_KEEP_VIDEOS_ONLY, true),
                 )
             }
             start() // resume where you left off (already-kept files are skipped)
@@ -83,8 +99,9 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setSource(uri: Uri) {
-        if (uri == _state.value.destUri) {
-            _events.tryEmit("Pick a different folder than the destination")
+        val s = _state.value
+        if (uri == s.destUri || uri == s.keepUri) {
+            _events.tryEmit("Pick a different folder than the destination folders")
             return
         }
         grant(uri)
@@ -94,8 +111,9 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     /** Pass null to go back to the default "_marked_for_delete" subfolder. */
     fun setDest(uri: Uri?) {
         if (uri != null) {
-            if (uri == _state.value.sourceUri) {
-                _events.tryEmit("Destination must be different from the folder you're reviewing")
+            val s = _state.value
+            if (uri == s.sourceUri || uri == s.keepUri) {
+                _events.tryEmit("Pick a folder that isn't the one you're reviewing or the keep folder")
                 return
             }
             grant(uri)
@@ -103,13 +121,34 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(destUri = uri, destName = uri?.let { u -> storage.friendlyName(u) }) }
     }
 
+    /** Pass null so kept files stay where they are. */
+    fun setKeep(uri: Uri?) {
+        if (uri != null) {
+            val s = _state.value
+            if (uri == s.sourceUri || uri == s.destUri) {
+                _events.tryEmit("Pick a folder that isn't the one you're reviewing or the delete folder")
+                return
+            }
+            grant(uri)
+        }
+        _state.update { it.copy(keepUri = uri, keepName = uri?.let { u -> storage.friendlyName(u) }) }
+    }
+
+    fun setKeepVideosOnly(value: Boolean) {
+        _state.update { it.copy(keepVideosOnly = value) }
+    }
+
     fun start() {
         val src = _state.value.sourceUri ?: return
         val dst = _state.value.destUri
+        val keep = _state.value.keepUri
+        val keepVideosOnly = _state.value.keepVideosOnly
 
         val e = prefs.edit()
         e.putString(KEY_SOURCE, src.toString())
         if (dst != null) e.putString(KEY_DEST, dst.toString()) else e.remove(KEY_DEST)
+        if (keep != null) e.putString(KEY_KEEP, keep.toString()) else e.remove(KEY_KEEP)
+        e.putBoolean(KEY_KEEP_VIDEOS_ONLY, keepVideosOnly)
         e.apply()
 
         synchronized(history) { history.clear() }
@@ -117,7 +156,8 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(
                 sessionActive = true, loading = true, items = emptyList(), index = 0,
-                movedCount = 0, keptCount = 0, canUndo = false, undoing = false, markedInFolder = null,
+                movedCount = 0, keptCount = 0, canUndo = false, undoing = false,
+                markedInFolder = null, favorites = emptySet(),
             )
         }
 
@@ -127,7 +167,9 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                     val root = storage.treeRoot(src)
                     val destParent = dst?.let { storage.treeRoot(it) }
                         ?: storage.findChildDir(root, DEFAULT_DEST_FOLDER)
-                    Session(src, root, destParent, dst != null) to storage.listMedia(src, kept.get(src))
+                    val keepParent = keep?.let { storage.treeRoot(it) }
+                    Session(src, root, destParent, dst != null, keepParent, keepVideosOnly) to
+                        storage.listMedia(src, kept.get(src))
                 }
                 session = ses
                 _state.update { it.copy(loading = false, items = media) }
@@ -164,7 +206,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val ses = session ?: return
         if (s.undoing) return
 
-        val action = Action(s.index, file, moved = true)
+        val action = Action(s.index, file, Kind.DELETE)
         synchronized(history) { history.addLast(action) }
         _state.update {
             it.copy(index = it.index + 1, movedCount = it.movedCount + 1, canUndo = true)
@@ -182,16 +224,36 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Swipe right: leave the file where it is and go to the next one. */
+    /**
+     * Swipe right: go to the next file. If a keep folder is set (and this file qualifies),
+     * the file is moved there; otherwise it stays where it is.
+     */
     fun keep() {
         val s = _state.value
         val file = s.current ?: return
         val ses = session ?: return
         if (s.undoing) return
 
-        synchronized(history) { history.addLast(Action(s.index, file, moved = false)) }
-        kept.add(ses.source, file.documentId)
+        val keepParent = ses.keepParent
+        val moves = keepParent != null && (!ses.keepVideosOnly || file.isVideo)
+        val action = Action(s.index, file, if (moves) Kind.KEEP_MOVE else Kind.KEEP_STAY)
+
+        synchronized(history) { history.addLast(action) }
+        if (!moves) kept.add(ses.source, file.documentId)
         _state.update { it.copy(index = it.index + 1, keptCount = it.keptCount + 1, canUndo = true) }
+
+        if (moves && keepParent != null) {
+            jobs.trySend {
+                try {
+                    action.movedUri = storage.move(file.uri, file.name, file.mime, ses.sourceParent, keepParent)
+                } catch (e: Exception) {
+                    // Couldn't move it: treat it as an ordinary keep so it doesn't reappear.
+                    action.failed = true
+                    kept.add(ses.source, file.documentId)
+                    _events.tryEmit("Couldn't move ${file.name} to the keep folder: ${e.message ?: e.javaClass.simpleName}")
+                }
+            }
+        }
     }
 
     fun undo() {
@@ -200,7 +262,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         if (s.undoing || s.loading) return
         val action = synchronized(history) { history.removeLastOrNull() } ?: return
 
-        if (!action.moved) {
+        if (action.kind == Kind.KEEP_STAY) {
             kept.remove(ses.source, action.file.documentId)
             _state.update {
                 it.copy(index = action.index, keptCount = it.keptCount - 1, canUndo = hasHistory())
@@ -214,10 +276,13 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 if (!action.failed) {
                     val movedUri = action.movedUri ?: error("File location unknown")
-                    val destParent = ses.destParent ?: error("Destination folder missing")
+                    val from = (if (action.kind == Kind.DELETE) ses.destParent else ses.keepParent)
+                        ?: error("Destination folder missing")
                     restored = storage.move(
-                        movedUri, action.file.name, action.file.mime, destParent, ses.sourceParent,
+                        movedUri, action.file.name, action.file.mime, from, ses.sourceParent,
                     )
+                } else if (action.kind == Kind.KEEP_MOVE) {
+                    kept.remove(ses.source, action.file.documentId)
                 }
             } catch (e: Exception) {
                 synchronized(history) { history.addLast(action) }
@@ -231,11 +296,56 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 st.copy(
                     items = list,
                     index = action.index,
-                    movedCount = if (action.failed) st.movedCount else st.movedCount - 1,
+                    // A failed delete-move was already subtracted when it failed.
+                    movedCount = if (action.kind == Kind.DELETE && !action.failed) st.movedCount - 1 else st.movedCount,
+                    keptCount = if (action.kind == Kind.KEEP_MOVE) st.keptCount - 1 else st.keptCount,
                     undoing = false,
                 )
             }
         }
+    }
+
+    // ---------------------------------------------------------------- favorites
+
+    /** Looks up whether the current file is already a gallery favorite (to draw the star). */
+    fun loadFavoriteStatus() {
+        val file = _state.value.current ?: return
+        if (!Favorites.supported) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val fav = Favorites.isFavorite(appCtx, file.uri, file.documentId)
+            _state.update {
+                it.copy(favorites = if (fav) it.favorites + file.documentId else it.favorites - file.documentId)
+            }
+        }
+    }
+
+    /** Asks Android to favorite / un-favorite the current file (shows a system confirmation). */
+    fun toggleFavorite() {
+        val file = _state.value.current ?: return
+        if (!Favorites.supported) {
+            _events.tryEmit("Favorites need Android 11 or newer")
+            return
+        }
+        val newValue = file.documentId !in _state.value.favorites
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val pi = Favorites.request(appCtx, file.uri, file.documentId, newValue)
+                pendingFav = file.documentId to newValue
+                _favRequests.emit(pi.intentSender)
+            } catch (e: Exception) {
+                _events.tryEmit("Couldn't favorite: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun favoriteResult(approved: Boolean) {
+        val (id, value) = pendingFav ?: return
+        pendingFav = null
+        if (!approved) return
+        _state.update {
+            it.copy(favorites = if (value) it.favorites + id else it.favorites - id)
+        }
+        _events.tryEmit(if (value) "Added to favorites" else "Removed from favorites")
     }
 
     // ---------------------------------------------------------------- marked folder
@@ -277,5 +387,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val KEY_SOURCE = "source"
         const val KEY_DEST = "dest"
+        const val KEY_KEEP = "keep"
+        const val KEY_KEEP_VIDEOS_ONLY = "keep_videos_only"
     }
 }
