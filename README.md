@@ -7,7 +7,7 @@ Swipe through the photos and videos in a folder:
 - **Undo** puts the last swipe back (moves the file back if it was marked)
 - Tap a video to pause/resume. Videos start muted (🔇 button to unmute). A seek bar under the video lets you scrub.
 - Optional **keep folder**: swipe-right files (by default only videos) are moved there instead of staying put.
-- **Tags** (private to the app): tap "+ Tag" under the photo/video to make a tag, tap chips to put tags on/off the current file. Later open **Tagged files** (start screen or ⋮ menu), pick a tag and move every file with that tag to a folder in one go.
+- **Tags** (private to the app): tap "+ Tag" under the photo/video to make a tag, tap chips to put tags on/off the current file. Later open **Tagged files** (start screen or ⋮ menu), pick a tag and move every file with that tag to a folder in one go. Tags can be renamed and reordered (▲ ▼) there; the chips follow that order.
 - ☆ button on the card: asks Android to mark the file as a gallery favorite (system confirmation dialog).
 
 Newest files come first. Files you swipe right on are remembered and hidden next time you open

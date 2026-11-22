@@ -4,6 +4,8 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
+enum class RenameResult { OK, BLANK, EXISTS }
+
 /**
  * Tags are private to SwipeCull: a list of tag names, plus which files (by document URI) carry
  * which tags. Nothing is written into the media files themselves.
@@ -86,6 +88,36 @@ class TagStore(context: Context) {
     /** The file moved: carry its tags over to its new URI. */
     fun rename(old: String, new: String) = edit { m ->
         if (old != new) m.assign.remove(old)?.let { m.assign[new] = it }
+    }
+
+    /** Renames a tag everywhere. Refuses blank names and names another tag already uses. */
+    fun renameTag(old: String, raw: String): RenameResult {
+        val name = raw.trim().take(MAX_NAME)
+        if (name.isEmpty()) return RenameResult.BLANK
+        return edit { m ->
+            val idx = m.names.indexOf(old)
+            if (idx < 0) return@edit RenameResult.OK
+            if (m.names.any { it != old && it.equals(name, ignoreCase = true) }) return@edit RenameResult.EXISTS
+            m.names[idx] = name
+            for (set in m.assign.values) {
+                if (old in set) {
+                    val rebuilt = set.map { if (it == old) name else it }
+                    set.clear()
+                    set.addAll(rebuilt)
+                }
+            }
+            RenameResult.OK
+        }
+    }
+
+    /** Moves a tag up (delta = -1) or down (+1) in the list. */
+    fun moveTag(tag: String, delta: Int) = edit { m ->
+        val i = m.names.indexOf(tag)
+        val j = i + delta
+        if (i >= 0 && j in m.names.indices) {
+            m.names[i] = m.names[j]
+            m.names[j] = tag
+        }
     }
 
     fun deleteTag(tag: String) = edit { m ->

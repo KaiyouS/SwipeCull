@@ -55,19 +55,28 @@ fun TagRow(state: UiState, vm: SwipeViewModel, modifier: Modifier = Modifier) {
     }
 
     if (showNew) {
-        NewTagDialog(
-            onCreate = { vm.addTagToCurrent(it); showNew = false },
+        TagNameDialog(
+            title = "New tag",
+            initial = "",
+            confirmLabel = "Add to this file",
+            onConfirm = { vm.addTagToCurrent(it); showNew = false },
             onDismiss = { showNew = false },
         )
     }
 }
 
 @Composable
-private fun NewTagDialog(onCreate: (String) -> Unit, onDismiss: () -> Unit) {
-    var text by remember { mutableStateOf("") }
+private fun TagNameDialog(
+    title: String,
+    initial: String,
+    confirmLabel: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("New tag") },
+        title = { Text(title) },
         text = {
             OutlinedTextField(
                 value = text,
@@ -77,7 +86,7 @@ private fun NewTagDialog(onCreate: (String) -> Unit, onDismiss: () -> Unit) {
             )
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(text) }, enabled = text.isNotBlank()) { Text("Add to this file") }
+            TextButton(onClick = { onConfirm(text) }, enabled = text.isNotBlank()) { Text(confirmLabel) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
@@ -88,6 +97,7 @@ private fun NewTagDialog(onCreate: (String) -> Unit, onDismiss: () -> Unit) {
 fun TagsScreen(state: UiState, vm: SwipeViewModel) {
     var pendingTag by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }
+    var renaming by remember { mutableStateOf<String?>(null) }
 
     val startHint = remember {
         DocumentsContract.buildTreeDocumentUri("com.android.externalstorage.documents", "primary:DCIM")
@@ -125,26 +135,51 @@ fun TagsScreen(state: UiState, vm: SwipeViewModel) {
             )
         }
 
-        state.tagNames.forEach { name ->
+        if (state.tagNames.size > 1) {
+            Text(
+                "Use ▲ ▼ to reorder. The chips under each photo follow this order.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        state.tagNames.forEachIndexed { index, name ->
             val n = counts[name] ?: 0
             OutlinedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(name, style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "$n file${if (n == 1) "" else "s"}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(name, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "$n file${if (n == 1) "" else "s"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { vm.moveTag(name, -1) }, enabled = index > 0) { Text("▲") }
+                        TextButton(onClick = { vm.moveTag(name, 1) }, enabled = index < state.tagNames.lastIndex) { Text("▼") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Button(
                             onClick = { pendingTag = name; picker.launch(startHint) },
                             enabled = n > 0 && !state.bulkBusy,
-                        ) { Text("Move to folder…") }
-                        TextButton(onClick = { confirmDelete = name }, enabled = !state.bulkBusy) { Text("Delete tag") }
+                        ) { Text("Move…") }
+                        TextButton(onClick = { renaming = name }) { Text("Rename") }
+                        TextButton(onClick = { confirmDelete = name }, enabled = !state.bulkBusy) { Text("Delete") }
                     }
                 }
             }
         }
+    }
+
+    renaming?.let { tag ->
+        TagNameDialog(
+            title = "Rename tag",
+            initial = tag,
+            confirmLabel = "Rename",
+            onConfirm = { vm.renameTag(tag, it); renaming = null },
+            onDismiss = { renaming = null },
+        )
     }
 
     confirmDelete?.let { tag ->

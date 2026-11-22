@@ -355,6 +355,20 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         refreshTags()
     }
 
+    fun renameTag(old: String, newName: String) {
+        when (tags.renameTag(old, newName)) {
+            RenameResult.OK -> refreshTags()
+            RenameResult.EXISTS -> _events.tryEmit("A tag called \"${newName.trim()}\" already exists")
+            RenameResult.BLANK -> {}
+        }
+    }
+
+    /** Reorders the tag list (and so the chips under each photo): delta -1 = up, +1 = down. */
+    fun moveTag(tag: String, delta: Int) {
+        tags.moveTag(tag, delta)
+        refreshTags()
+    }
+
     /** Removes the tag from every file. The files themselves are untouched. */
     fun deleteTag(tag: String) {
         tags.deleteTag(tag)
