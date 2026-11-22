@@ -16,6 +16,17 @@ android {
         versionName = "1.0"
     }
 
+    // One fixed key for every build, so each new APK installs as an update over the last one.
+    // (A throwaway personal key, not for publishing to an app store.)
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("swipecull-debug.jks")
+            storePassword = "swipecull"
+            keyAlias = "swipecull"
+            keyPassword = "swipecull"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
