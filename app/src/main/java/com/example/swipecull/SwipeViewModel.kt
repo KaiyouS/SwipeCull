@@ -446,7 +446,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val file = _state.value.current ?: return
         if (!Favorites.supported) return
         viewModelScope.launch(Dispatchers.IO) {
-            val fav = Favorites.isFavorite(appCtx, file.uri, file.documentId)
+            val fav = Favorites.isFavorite(appCtx, file.uri, file.documentId, file.isVideo)
             _state.update {
                 it.copy(favorites = if (fav) it.favorites + file.documentId else it.favorites - file.documentId)
             }
@@ -463,7 +463,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val newValue = file.documentId !in _state.value.favorites
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val pi = Favorites.request(appCtx, file.uri, file.documentId, newValue)
+                val pi = Favorites.request(appCtx, file.uri, file.documentId, file.isVideo, newValue)
                 pendingFav = file.documentId to newValue
                 _favRequests.emit(pi.intentSender)
             } catch (e: Exception) {
