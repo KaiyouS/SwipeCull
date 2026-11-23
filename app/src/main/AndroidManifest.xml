@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- No storage permissions needed: folder access is granted via the system folder picker. -->
+    <!--
+      Moving files uses folder access granted through the system folder picker. The media
+      permissions below are only requested when you ask to review your gallery favorites (or
+      want existing favorites shown on the star); they let the app read which files are starred.
+    -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
 
     <application
         android:allowBackup="true"

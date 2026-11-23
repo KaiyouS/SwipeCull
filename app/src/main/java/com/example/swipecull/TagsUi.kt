@@ -185,6 +185,11 @@ fun TagsScreen(state: UiState, vm: SwipeViewModel) {
     val startHint = remember {
         DocumentsContract.buildTreeDocumentUri("com.android.externalstorage.documents", "primary:DCIM")
     }
+    val appContext = androidx.compose.ui.platform.LocalContext.current
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        if (grants.values.any { it }) vm.startFavoritesReview()
+        else vm.notify("Allow photos and videos access to read your favorites")
+    }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         val tag = pendingTag
         pendingTag = null
@@ -225,6 +230,21 @@ fun TagsScreen(state: UiState, vm: SwipeViewModel) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            if (Favorites.supported) {
+                OutlinedButton(
+                    onClick = {
+                        if (Favorites.hasMediaAccess(appContext)) vm.startFavoritesReview()
+                        else permLauncher.launch(Favorites.mediaPermissions)
+                    },
+                    enabled = !state.bulkBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(AppIcons.Star, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Review all favorites")
+                }
+            }
 
             if (state.tagAssign.isNotEmpty()) {
                 Button(

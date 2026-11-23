@@ -658,7 +658,7 @@ private fun statusLine(state: UiState): String {
         state.binnedCount to "binned",
     ).filter { it.first > 0 }.map { "${it.first} ${it.second}" }
     return listOfNotNull(
-        state.reviewLabel?.let { "Tag: $it" },
+        state.reviewLabel?.let { if (it == "Favorites") it else "Tag: $it" },
         counts.takeIf { it.isNotEmpty() }?.joinToString(" · "),
         if (state.shuffle) "shuffled" else null,
     ).joinToString(" · ").ifEmpty { "Swipe or tap to begin" }
@@ -809,7 +809,7 @@ private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
         )
         Text(
             if (nothing) (if (tagReview) "No files to review" else "Nothing new to review")
-            else (if (tagReview) "Tag review finished" else "All caught up"),
+            else (if (tagReview) "Review finished" else "All caught up"),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
@@ -817,7 +817,7 @@ private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
 
         if (nothing) {
             Text(
-                if (tagReview) "No files with this tag could be found any more."
+                if (tagReview) "No matching files could be found."
                 else "Every file in this folder has been swiped already.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

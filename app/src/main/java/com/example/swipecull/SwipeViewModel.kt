@@ -606,6 +606,91 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Swipe through every file the gallery has marked as a favorite (MediaStore IS_FAVORITE),
+     * with the usual delete / keep folders. Only files inside folders this app has been given
+     * access to can be reviewed; the rest are counted and reported. Needs [Favorites.hasMediaAccess].
+     */
+    fun notify(message: String) { _events.tryEmit(message) }
+
+    fun startFavoritesReview() {
+        val s = _state.value
+        val src = s.sourceUri
+        if (src == null) {
+            _events.tryEmit("Choose a folder to review first (the delete folder lives there by default)")
+            return
+        }
+        if (!Favorites.supported) {
+            _events.tryEmit("Favorites need Android 11 or newer")
+            return
+        }
+        val dst = s.destUri
+        val keep = s.keepUri
+        val keepVideosOnly = s.keepVideosOnly
+        val shuffle = s.shuffle
+        val queuedForBin = bin.items().map { it.uri }.toSet()
+
+        synchronized(history) { history.clear() }
+        session = null
+        _state.update {
+            it.copy(
+                showTags = false, sessionActive = true, loading = true, items = emptyList(), index = 0,
+                movedCount = 0, keptCount = 0, canUndo = false, undoing = false,
+                markedInFolder = null, favorites = emptySet(), reviewLabel = "Favorites",
+                skippedCount = 0, binnedCount = 0,
+            )
+        }
+
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val root = storage.treeRoot(src)
+                    val destParent = dst?.let { storage.treeRoot(it) }
+                        ?: storage.findChildDir(root, DEFAULT_DEST_FOLDER)
+                    val keepParent = keep?.let { storage.treeRoot(it) }
+
+                    val rows = Favorites.queryFavorites(appCtx)
+                    // Every folder we hold a grant for, so favorites can be mapped to document URIs.
+                    val trees = appCtx.contentResolver.persistedUriPermissions
+                        .filter { it.isReadPermission && it.isWritePermission }
+                        .map { it.uri }
+                        .filter { runCatching { DocumentsContract.getTreeDocumentId(it) }.isSuccess }
+                    var outside = 0
+                    val files = ArrayList<MediaFile>()
+                    for (r in rows) {
+                        val id = r.docId
+                        val tree = trees.firstOrNull { t ->
+                            val tid = DocumentsContract.getTreeDocumentId(t)
+                            id == tid || id.startsWith(if (tid.endsWith("/")) tid else "$tid/") ||
+                                (tid.endsWith(":") && id.startsWith(tid))
+                        }
+                        if (tree == null) { outside++; continue }
+                        val doc = DocumentsContract.buildDocumentUriUsingTree(tree, id)
+                        if (doc.toString() in queuedForBin) continue
+                        val f = storage.mediaFileFor(doc)
+                        if (f == null) outside++ else files += f
+                    }
+                    files.sortByDescending { it.lastModified }
+                    val ses = Session(src, root, destParent, dst != null, keepParent, keepVideosOnly, tagReview = true)
+                    Triple(ses, if (shuffle) files.shuffled() else files, rows.size to outside)
+                }
+                session = result.first
+                _state.update { it.copy(loading = false, items = result.second) }
+                val (total, outside) = result.third
+                _events.tryEmit(
+                    when {
+                        total == 0 -> "Android's media database lists no favorites. Samsung Gallery may keep its own favorites list that other apps can't read."
+                        outside > 0 -> "$total favorites found, $outside are in folders you haven't given this app access to (or no longer exist)"
+                        else -> "$total favorites found"
+                    },
+                )
+            } catch (ex: Exception) {
+                _state.update { it.copy(sessionActive = false, loading = false, reviewLabel = null) }
+                _events.tryEmit("Couldn't read favorites: ${ex.message ?: ex.javaClass.simpleName}")
+            }
+        }
+    }
+
     /** Moves every file carrying [tag] into [dest], then drops that tag from them. */
     fun moveTagged(tag: String, dest: Uri) {
         if (_state.value.bulkBusy) return
