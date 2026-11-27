@@ -53,6 +53,7 @@ data class UiState(
     val showTags: Boolean = false,
     /** Go through files in random order. */
     val shuffle: Boolean = false,
+    val levelVolume: Boolean = true,
     /** Non-null while re-reviewing tagged files: the tag name, or "All tagged". */
     val reviewLabel: String? = null,
     val bulkBusy: Boolean = false,

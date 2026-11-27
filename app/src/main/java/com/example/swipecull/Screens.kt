@@ -296,6 +296,13 @@ private fun SetupScreen(
                 checked = state.shuffle,
                 onChange = { vm.toggleShuffle() },
             )
+            SwitchRow(
+                icon = AppIcons.VolumeUp,
+                title = "Even out video volume",
+                subtitle = "Boost quiet videos and tame loud ones",
+                checked = state.levelVolume,
+                onChange = { vm.toggleLevelVolume() },
+            )
 
             Text(
                 "Android doesn't let apps open a storage root or the top-level Download folder, " +
@@ -465,6 +472,11 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                         onClick = { menuOpen = false; vm.toggleShuffle() },
                     )
                     DropdownMenuItem(
+                        text = { Text(if (state.levelVolume) "Even volume: on" else "Even volume: off") },
+                        leadingIcon = { Icon(AppIcons.VolumeUp, contentDescription = null) },
+                        onClick = { menuOpen = false; vm.toggleLevelVolume() },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Tags") },
                         leadingIcon = { Icon(AppIcons.Label, contentDescription = null) },
                         onClick = { menuOpen = false; vm.openTags() },
@@ -522,6 +534,7 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                     VideoPlayer(
                         uri = item.uri,
                         muted = muted,
+                        leveled = state.levelVolume,
                         paused = paused,
                         onPlayer = { playerHolder.value = it },
                         modifier = Modifier.fillMaxSize(),
@@ -710,6 +723,7 @@ private fun formatSize(bytes: Long): String = when {
 private fun VideoPlayer(
     uri: Uri,
     muted: Boolean,
+    leveled: Boolean,
     paused: Boolean,
     onPlayer: (ExoPlayer) -> Unit,
     modifier: Modifier = Modifier,
@@ -724,9 +738,12 @@ private fun VideoPlayer(
     }
     DisposableEffect(player) {
         player.setSeekParameters(SeekParameters.CLOSEST_SYNC) // fast scrubbing on big videos
-        val leveler = VolumeLeveler(player)
         onPlayer(player)
-        onDispose { leveler.release(); player.release() }
+        onDispose { player.release() }
+    }
+    DisposableEffect(player, leveled) {
+        val leveler = if (leveled) VolumeLeveler(player) else null
+        onDispose { leveler?.release() }
     }
     LaunchedEffect(player, muted) { player.volume = if (muted) 0f else 1f }
     LaunchedEffect(player, paused) { player.playWhenReady = !paused }

@@ -82,7 +82,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         refreshTags()
-        _state.update { it.copy(shuffle = prefs.getBoolean(KEY_SHUFFLE, false)) }
+        _state.update { it.copy(shuffle = prefs.getBoolean(KEY_SHUFFLE, false), levelVolume = prefs.getBoolean(KEY_LEVEL, true)) }
         refreshBin()
 
         val src = prefs.getString(KEY_SOURCE, null)?.let(Uri::parse)
@@ -611,6 +611,12 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
      * with the usual delete / keep folders. Only files inside folders this app has been given
      * access to can be reviewed; the rest are counted and reported. Needs [Favorites.hasMediaAccess].
      */
+    fun toggleLevelVolume() {
+        val on = !_state.value.levelVolume
+        prefs.edit().putBoolean(KEY_LEVEL, on).apply()
+        _state.update { it.copy(levelVolume = on) }
+    }
+
     fun notify(message: String) { _events.tryEmit(message) }
 
     fun startFavoritesReview() {
@@ -840,5 +846,6 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_KEEP = "keep"
         const val KEY_KEEP_VIDEOS_ONLY = "keep_videos_only"
         const val KEY_SHUFFLE = "shuffle"
+        const val KEY_LEVEL = "level_volume"
     }
 }
