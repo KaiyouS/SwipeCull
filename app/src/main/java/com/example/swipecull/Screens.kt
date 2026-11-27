@@ -724,8 +724,9 @@ private fun VideoPlayer(
     }
     DisposableEffect(player) {
         player.setSeekParameters(SeekParameters.CLOSEST_SYNC) // fast scrubbing on big videos
+        val leveler = VolumeLeveler(player)
         onPlayer(player)
-        onDispose { player.release() }
+        onDispose { leveler.release(); player.release() }
     }
     LaunchedEffect(player, muted) { player.volume = if (muted) 0f else 1f }
     LaunchedEffect(player, paused) { player.playWhenReady = !paused }
