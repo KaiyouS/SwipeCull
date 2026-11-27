@@ -82,7 +82,19 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         refreshTags()
-        _state.update { it.copy(shuffle = prefs.getBoolean(KEY_SHUFFLE, false), levelVolume = prefs.getBoolean(KEY_LEVEL, true)) }
+        _state.update {
+            it.copy(
+                shuffle = prefs.getBoolean(KEY_SHUFFLE, false),
+                levelVolume = prefs.getBoolean(KEY_LEVEL, true),
+                sortOrder = SortOrder.entries.firstOrNull { o -> o.name == prefs.getString(KEY_SORT, null) } ?: SortOrder.NEWEST,
+                typeFilter = TypeFilter.entries.firstOrNull { t -> t.name == prefs.getString(KEY_TYPE, null) } ?: TypeFilter.ALL,
+                minSizeMb = prefs.getInt(KEY_MIN_MB, 0),
+                olderThanDays = prefs.getInt(KEY_OLDER_DAYS, 0),
+                groupSimilar = prefs.getBoolean(KEY_GROUP, false),
+                swipeBrowse = prefs.getBoolean(KEY_BROWSE, false),
+                seekSeconds = prefs.getInt(KEY_SEEK, 10),
+            )
+        }
         refreshBin()
 
         val src = prefs.getString(KEY_SOURCE, null)?.let(Uri::parse)
@@ -161,13 +173,117 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val on = !_state.value.shuffle
         prefs.edit().putBoolean(KEY_SHUFFLE, on).apply()
         _state.update { st ->
-            val head = st.items.take(st.index + 1)
-            val tail = st.items.drop(st.index + 1)
+            val headEnd = maxOf(st.frontier, st.index + 1)
+            val head = st.items.take(headEnd)
+            val tail = st.items.drop(headEnd)
             st.copy(
                 shuffle = on,
-                items = head + if (on) tail.shuffled() else tail.sortedByDescending { it.lastModified },
+                items = head + if (on) tail.shuffled() else sortFiles(tail, st.sortOrder),
             )
         }
+    }
+
+    fun setSort(o: SortOrder) {
+        prefs.edit().putString(KEY_SORT, o.name).apply()
+        _state.update { it.copy(sortOrder = o) }
+    }
+
+    fun setTypeFilter(t: TypeFilter) {
+        prefs.edit().putString(KEY_TYPE, t.name).apply()
+        _state.update { it.copy(typeFilter = t) }
+    }
+
+    fun setMinSizeMb(v: Int) {
+        prefs.edit().putInt(KEY_MIN_MB, v).apply()
+        _state.update { it.copy(minSizeMb = v) }
+    }
+
+    fun setOlderThanDays(v: Int) {
+        prefs.edit().putInt(KEY_OLDER_DAYS, v).apply()
+        _state.update { it.copy(olderThanDays = v) }
+    }
+
+    fun toggleGroupSimilar() {
+        val on = !_state.value.groupSimilar
+        prefs.edit().putBoolean(KEY_GROUP, on).apply()
+        _state.update { it.copy(groupSimilar = on) }
+    }
+
+    fun toggleSwipeBrowse() {
+        val on = !_state.value.swipeBrowse
+        prefs.edit().putBoolean(KEY_BROWSE, on).apply()
+        _state.update { it.copy(swipeBrowse = on) }
+    }
+
+    fun setSeekSeconds(v: Int) {
+        prefs.edit().putInt(KEY_SEEK, v).apply()
+        _state.update { it.copy(seekSeconds = v) }
+    }
+
+    // ---- navigation (no file is touched)
+
+    private fun UiState.nextLive(from: Int): Int {
+        var i = from
+        while (i < items.size && i in gone) i++
+        return i
+    }
+
+    /** Moves on after acting on the current file, jumping back to where you were if you'd gone back. */
+    private fun UiState.advance(moved: Boolean, freed: Long = 0L): UiState {
+        val i = index
+        val st = if (moved) copy(gone = gone + i) else this
+        val ni = st.nextLive(if (i < frontier) frontier else i + 1)
+        return st.copy(index = ni, frontier = maxOf(frontier, ni), freedBytes = freedBytes + freed)
+    }
+
+    private fun UiState.rewind(a: Int): UiState = copy(index = a, frontier = a, gone = gone - a)
+
+    fun goNext() {
+        val s = _state.value
+        if (s.current == null || s.undoing) return
+        _state.update { st ->
+            val ni = st.nextLive(st.index + 1)
+            st.copy(index = ni, frontier = maxOf(st.frontier, ni))
+        }
+    }
+
+    fun goPrevious() {
+        if (_state.value.undoing) return
+        _state.update { st -> st.previousIndex?.let { st.copy(index = it) } ?: st }
+    }
+
+    private fun sortFiles(list: List<MediaFile>, order: SortOrder): List<MediaFile> = when (order) {
+        SortOrder.NEWEST -> list.sortedByDescending { it.lastModified }
+        SortOrder.OLDEST -> list.sortedBy { it.lastModified }
+        SortOrder.LARGEST -> list.sortedByDescending { it.size }
+        SortOrder.SMALLEST -> list.sortedBy { it.size }
+    }
+
+    /** Applies the type / size / age filters, then the sort (or shuffle) and similar-photo grouping. */
+    private suspend fun arrangeItems(
+        media: List<MediaFile>,
+        cfg: UiState,
+    ): Pair<List<MediaFile>, Map<String, String>> {
+        val minBytes = cfg.minSizeMb * 1_048_576L
+        val cutoff = if (cfg.olderThanDays > 0) {
+            System.currentTimeMillis() - cfg.olderThanDays * 86_400_000L
+        } else Long.MAX_VALUE
+        val filtered = media.filter {
+            (cfg.typeFilter == TypeFilter.ALL || (cfg.typeFilter == TypeFilter.VIDEOS) == it.isVideo) &&
+                it.size >= minBytes &&
+                (it.lastModified <= 0 || it.lastModified <= cutoff)
+        }
+        val sorted = sortFiles(filtered, cfg.sortOrder)
+        if (!cfg.groupSimilar || cfg.typeFilter == TypeFilter.VIDEOS) {
+            return (if (cfg.shuffle) sorted.shuffled() else sorted) to emptyMap()
+        }
+        var groups = SimilarPhotos.group(appCtx, sorted)
+        if (cfg.shuffle) groups = groups.shuffled()
+        val labels = HashMap<String, String>()
+        for (g in groups) {
+            if (g.size > 1) g.forEachIndexed { i, f -> labels[f.documentId] = "Similar ${i + 1} of ${g.size}" }
+        }
+        return groups.flatten() to labels
     }
 
     fun setKeepVideosOnly(value: Boolean) {
@@ -179,6 +295,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val dst = _state.value.destUri
         val keep = _state.value.keepUri
         val keepVideosOnly = _state.value.keepVideosOnly
+        val cfg = _state.value
 
         val e = prefs.edit()
         e.putString(KEY_SOURCE, src.toString())
@@ -195,22 +312,23 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 movedCount = 0, keptCount = 0, canUndo = false, undoing = false,
                 markedInFolder = null, favorites = emptySet(), reviewLabel = null,
                 skippedCount = 0, binnedCount = 0,
+                gone = emptySet(), frontier = 0, freedBytes = 0L, similar = emptyMap(),
             )
         }
 
         viewModelScope.launch {
             try {
-                val (ses, media) = withContext(Dispatchers.IO) {
+                val (ses, arranged) = withContext(Dispatchers.IO) {
                     val root = storage.treeRoot(src)
                     val destParent = dst?.let { storage.treeRoot(it) }
                         ?: storage.findChildDir(root, DEFAULT_DEST_FOLDER)
                     val keepParent = keep?.let { storage.treeRoot(it) }
                     val media = storage.listMedia(src, kept.get(src) + bin.docIds())
                     Session(src, root, destParent, dst != null, keepParent, keepVideosOnly) to
-                        if (_state.value.shuffle) media.shuffled() else media
+                        arrangeItems(media, cfg)
                 }
                 session = ses
-                _state.update { it.copy(loading = false, items = media) }
+                _state.update { it.copy(loading = false, items = arranged.first, similar = arranged.second) }
             } catch (ex: Exception) {
                 _state.update { it.copy(sessionActive = false, loading = false) }
                 _events.tryEmit("Couldn't open folder: ${ex.message ?: ex.javaClass.simpleName}")
@@ -260,7 +378,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         }
         synchronized(history) { history.addLast(action) }
         _state.update {
-            it.copy(index = it.index + 1, movedCount = it.movedCount + 1, canUndo = true)
+            it.advance(true, file.size).copy(movedCount = it.movedCount + 1, canUndo = true)
         }
 
         jobs.trySend {
@@ -275,7 +393,12 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                     tags.setTags(file.uri.toString(), action.savedTags)
                     refreshTags()
                 }
-                _state.update { it.copy(movedCount = it.movedCount - 1) }
+                _state.update {
+                    it.copy(
+                        movedCount = it.movedCount - 1, freedBytes = it.freedBytes - file.size,
+                        gone = it.gone - action.index,
+                    )
+                }
                 _events.tryEmit("Couldn't move ${file.name}: ${e.message ?: e.javaClass.simpleName}")
             }
         }
@@ -298,7 +421,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         synchronized(history) { history.addLast(action) }
         // (Tag reviews are driven by tags, not by the "already kept" list.)
         if (!moves && !ses.tagReview) kept.add(ses.source, file.documentId)
-        _state.update { it.copy(index = it.index + 1, keptCount = it.keptCount + 1, canUndo = true) }
+        _state.update { it.advance(moves).copy(keptCount = it.keptCount + 1, canUndo = true) }
 
         if (moves && keepParent != null) {
             jobs.trySend {
@@ -312,6 +435,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 } catch (e: Exception) {
                     // Couldn't move it: treat it as an ordinary keep so it doesn't reappear.
                     action.failed = true
+                    _state.update { it.copy(gone = it.gone - action.index) }
                     if (!ses.tagReview) kept.add(ses.source, file.documentId)
                     _events.tryEmit("Couldn't move ${file.name} to the keep folder: ${e.message ?: e.javaClass.simpleName}")
                 }
@@ -327,7 +451,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
 
         if (action.kind == Kind.SKIP) {
             _state.update {
-                it.copy(index = action.index, skippedCount = it.skippedCount - 1, canUndo = hasHistory())
+                it.rewind(action.index).copy(skippedCount = it.skippedCount - 1, canUndo = hasHistory())
             }
             return
         }
@@ -338,8 +462,8 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
             if (action.savedTags.isNotEmpty()) tags.setTags(uri, action.savedTags)
             refreshTags()
             _state.update {
-                it.copy(
-                    index = action.index, binnedCount = it.binnedCount - 1,
+                it.rewind(action.index).copy(
+                    binnedCount = it.binnedCount - 1, freedBytes = it.freedBytes - action.file.size,
                     binCount = bin.items().size, canUndo = hasHistory(),
                 )
             }
@@ -349,7 +473,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         if (action.kind == Kind.KEEP_STAY) {
             kept.remove(ses.source, action.file.documentId)
             _state.update {
-                it.copy(index = action.index, keptCount = it.keptCount - 1, canUndo = hasHistory())
+                it.rewind(action.index).copy(keptCount = it.keptCount - 1, canUndo = hasHistory())
             }
             return
         }
@@ -383,11 +507,11 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { st ->
                 val list = st.items.toMutableList()
                 if (action.index in list.indices) list[action.index] = action.file.copy(uri = restored)
-                st.copy(
+                st.rewind(action.index).copy(
                     items = list,
-                    index = action.index,
                     // A failed delete-move was already subtracted when it failed.
                     movedCount = if (action.kind == Kind.DELETE && !action.failed) st.movedCount - 1 else st.movedCount,
+                    freedBytes = if (action.kind == Kind.DELETE && !action.failed) st.freedBytes - action.file.size else st.freedBytes,
                     keptCount = if (action.kind == Kind.KEEP_MOVE) st.keptCount - 1 else st.keptCount,
                     undoing = false,
                 )
@@ -403,7 +527,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val file = s.current ?: return
         if (session == null || s.undoing) return
         synchronized(history) { history.addLast(Action(s.index, file, Kind.SKIP)) }
-        _state.update { it.copy(index = it.index + 1, skippedCount = it.skippedCount + 1, canUndo = true) }
+        _state.update { it.advance(false).copy(skippedCount = it.skippedCount + 1, canUndo = true) }
     }
 
     /**
@@ -425,8 +549,8 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         bin.add(uri, file.isVideo)
         synchronized(history) { history.addLast(action) }
         _state.update {
-            it.copy(
-                index = it.index + 1, binnedCount = it.binnedCount + 1,
+            it.advance(true, file.size).copy(
+                binnedCount = it.binnedCount + 1,
                 binCount = bin.items().size, canUndo = true,
             )
         }
@@ -582,6 +706,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 movedCount = 0, keptCount = 0, canUndo = false, undoing = false,
                 markedInFolder = null, favorites = emptySet(), reviewLabel = tag ?: "All tagged",
                 skippedCount = 0, binnedCount = 0,
+                gone = emptySet(), frontier = 0, freedBytes = 0L, similar = emptyMap(),
             )
         }
 
@@ -644,6 +769,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 movedCount = 0, keptCount = 0, canUndo = false, undoing = false,
                 markedInFolder = null, favorites = emptySet(), reviewLabel = "Favorites",
                 skippedCount = 0, binnedCount = 0,
+                gone = emptySet(), frontier = 0, freedBytes = 0L, similar = emptyMap(),
             )
         }
 
@@ -748,6 +874,8 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 st.copy(
                     items = st.items.filterNot { it.uri.toString() in movedAway },
                     index = (st.index - before).coerceAtLeast(0),
+                    gone = emptySet(),
+                    frontier = (st.index - before).coerceAtLeast(0),
                     canUndo = false,
                     bulkBusy = false,
                 )
@@ -847,5 +975,12 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_KEEP_VIDEOS_ONLY = "keep_videos_only"
         const val KEY_SHUFFLE = "shuffle"
         const val KEY_LEVEL = "level_volume"
+        const val KEY_SORT = "sort"
+        const val KEY_TYPE = "type_filter"
+        const val KEY_MIN_MB = "min_mb"
+        const val KEY_OLDER_DAYS = "older_days"
+        const val KEY_GROUP = "group_similar"
+        const val KEY_BROWSE = "swipe_browse"
+        const val KEY_SEEK = "seek_seconds"
     }
 }

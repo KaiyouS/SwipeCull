@@ -1,6 +1,15 @@
 package com.example.swipecull
 
 import android.app.Activity
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.runtime.produceState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import android.media.MediaMetadataRetriever
+import android.media.ExifInterface
+import android.graphics.BitmapFactory
 import android.content.Context
 import android.net.Uri
 import android.os.Build
@@ -303,6 +312,53 @@ private fun SetupScreen(
                 checked = state.levelVolume,
                 onChange = { vm.toggleLevelVolume() },
             )
+            SwitchRow(
+                icon = AppIcons.SkipNext,
+                title = "Swipe to browse",
+                subtitle = if (state.swipeBrowse) "Swipe left for next, right for previous. Use the buttons to delete and keep."
+                else "Swipe left to delete, right to keep",
+                checked = state.swipeBrowse,
+                onChange = { vm.toggleSwipeBrowse() },
+            )
+            SwitchRow(
+                icon = AppIcons.Folder,
+                title = "Group similar photos",
+                subtitle = "Bursts and near-duplicates appear next to each other. Adds a short wait when starting.",
+                checked = state.groupSimilar,
+                onChange = { vm.toggleGroupSimilar() },
+            )
+            ChoiceRow(
+                title = "Double-tap a video to skip",
+                options = listOf("Off" to 0, "5 s" to 5, "10 s" to 10, "15 s" to 15, "30 s" to 30),
+                selected = state.seekSeconds,
+                onSelect = vm::setSeekSeconds,
+            )
+
+            SectionLabel("Order and filters")
+            ChoiceRow(
+                title = "Order",
+                options = SortOrder.entries.map { it.label to it },
+                selected = state.sortOrder,
+                onSelect = vm::setSort,
+            )
+            ChoiceRow(
+                title = "Show",
+                options = TypeFilter.entries.map { it.label to it },
+                selected = state.typeFilter,
+                onSelect = vm::setTypeFilter,
+            )
+            ChoiceRow(
+                title = "Only files at least",
+                options = listOf("Any size" to 0, "10 MB" to 10, "50 MB" to 50, "100 MB" to 100, "500 MB" to 500),
+                selected = state.minSizeMb,
+                onSelect = vm::setMinSizeMb,
+            )
+            ChoiceRow(
+                title = "Only files older than",
+                options = listOf("Any age" to 0, "1 month" to 30, "6 months" to 180, "1 year" to 365, "2 years" to 730),
+                selected = state.olderThanDays,
+                onSelect = vm::setOlderThanDays,
+            )
 
             Text(
                 "Android doesn't let apps open a storage root or the top-level Download folder, " +
@@ -388,6 +444,45 @@ private fun FolderCard(
     }
 }
 
+/** A row of single-choice pills (selected = colour change only, no checkmark). */
+@Composable
+private fun <T> ChoiceRow(
+    title: String,
+    options: List<Pair<String, T>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Text(title, style = MaterialTheme.typography.bodyLarge)
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            options.forEach { (label, value) ->
+                val on = value == selected
+                val shape = RoundedCornerShape(50)
+                Box(
+                    Modifier
+                        .height(34.dp)
+                        .clip(shape)
+                        .background(if (on) scheme.primaryContainer else Color.Transparent)
+                        .border(1.dp, if (on) scheme.primary else scheme.outline, shape)
+                        .clickable { onSelect(value) }
+                        .padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (on) scheme.onPrimaryContainer else scheme.onSurface,
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SwitchRow(
     title: String,
@@ -423,6 +518,17 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
     val cardState = rememberSwipeCardState(item.uri)
     var muted by rememberSaveable { mutableStateOf(true) }
     var paused by remember(item.uri) { mutableStateOf(false) }
+    var speed by rememberSaveable { mutableStateOf(1f) }
+    var seekFlash by remember(item.uri) { mutableStateOf<Pair<String, Int>?>(null) }
+    LaunchedEffect(seekFlash) {
+        if (seekFlash != null) {
+            delay(700)
+            seekFlash = null
+        }
+    }
+    val details by produceState<String?>(null, item.uri) {
+        value = withContext(Dispatchers.IO) { mediaDetails(context, item) }
+    }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     // Filled in by the video player so the seek bar (outside the swipe card) can drive it.
@@ -437,6 +543,17 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
         }
     }
     LaunchedEffect(menuOpen) { if (menuOpen) vm.refreshMarkedCount() }
+    val doubleTap: ((Float) -> Unit)? = if (item.isVideo && state.seekSeconds > 0) {
+        { frac ->
+            playerHolder.value?.let { p ->
+                val dir = if (frac < 0.5f) -1 else 1
+                val dur = p.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: Long.MAX_VALUE
+                p.seekTo((p.currentPosition + dir * state.seekSeconds * 1000L).coerceIn(0L, dur))
+                seekFlash = (if (dir < 0) "-${state.seekSeconds} s" else "+${state.seekSeconds} s") to
+                    ((seekFlash?.second ?: 0) + 1)
+            }
+        }
+    } else null
     LaunchedEffect(item.uri) { vm.loadFavoriteStatus() }
 
     Column(Modifier.fillMaxSize()) {
@@ -465,6 +582,17 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                         leadingIcon = { Icon(AppIcons.Undo, contentDescription = null) },
                         enabled = state.canUndo && !state.undoing,
                         onClick = { menuOpen = false; vm.undo() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Previous file") },
+                        leadingIcon = { Icon(AppIcons.ArrowBack, contentDescription = null) },
+                        enabled = state.previousIndex != null && !state.undoing,
+                        onClick = { menuOpen = false; vm.goPrevious() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (state.swipeBrowse) "Swipe: browse" else "Swipe: delete / keep") },
+                        leadingIcon = { Icon(AppIcons.SkipNext, contentDescription = null) },
+                        onClick = { menuOpen = false; vm.toggleSwipeBrowse() },
                     )
                     DropdownMenuItem(
                         text = { Text(if (state.shuffle) "Shuffle: on" else "Shuffle: off") },
@@ -525,8 +653,15 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
         SwipeCard(
             state = cardState,
             enabled = !state.undoing,
-            onSwiped = { dir -> if (dir < 0) vm.markForDeletion() else vm.keep() },
+            onSwiped = { dir ->
+                if (state.swipeBrowse) {
+                    if (dir < 0) vm.goNext() else vm.goPrevious()
+                } else if (dir < 0) vm.markForDeletion() else vm.keep()
+            },
             onTap = { if (item.isVideo) paused = !paused },
+            browse = state.swipeBrowse,
+            canSwipe = { dir -> !state.swipeBrowse || dir < 0 || state.previousIndex != null },
+            onDoubleTap = doubleTap,
             modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
         ) {
             key(item.uri) {
@@ -535,19 +670,22 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                         uri = item.uri,
                         muted = muted,
                         leveled = state.levelVolume,
+                        speed = speed,
                         paused = paused,
                         onPlayer = { playerHolder.value = it },
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
                     val request = remember(item.uri) { imageRequest(context, item.uri) }
-                    AsyncImage(
-                        model = request,
-                        imageLoader = imageLoader,
-                        contentDescription = item.name,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize(),
-                    )
+                    ZoomableBox(Modifier.fillMaxSize()) {
+                        AsyncImage(
+                            model = request,
+                            imageLoader = imageLoader,
+                            contentDescription = item.name,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                 }
             }
             if (item.isVideo && paused) {
@@ -568,6 +706,34 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                     modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
                     onClick = { muted = !muted },
                 )
+                Box(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 64.dp, bottom = 12.dp)
+                        .height(44.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .clickable {
+                            speed = when (speed) { 1f -> 1.5f; 1.5f -> 2f; 2f -> 0.5f; else -> 1f }
+                        }
+                        .padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        when (speed) { 0.5f -> "0.5x"; 1f -> "1x"; 1.5f -> "1.5x"; else -> "2x" },
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+            }
+            seekFlash?.let { (text, _) ->
+                Box(
+                    Modifier
+                        .align(if (text.startsWith("-")) Alignment.CenterStart else Alignment.CenterEnd)
+                        .padding(28.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                ) { Text(text, color = Color.White, style = MaterialTheme.typography.titleMedium) }
             }
             val isFav = item.documentId in state.favorites
             ScrimIconButton(
@@ -592,10 +758,13 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 6.dp)) {
             Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
-                fileMeta(item),
+                fileMeta(item, details),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            state.similar[item.documentId]?.let {
+                Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
         }
 
         // Action buttons (left = destructive, middle = neutral, right = keep)
@@ -674,6 +843,7 @@ private fun statusLine(state: UiState): String {
         state.reviewLabel?.let { if (it == "Favorites") it else "Tag: $it" },
         counts.takeIf { it.isNotEmpty() }?.joinToString(" · "),
         if (state.shuffle) "shuffled" else null,
+        if (state.freedBytes > 0) "frees ${formatSize(state.freedBytes)}" else null,
     ).joinToString(" · ").ifEmpty { "Swipe or tap to begin" }
 }
 
@@ -699,17 +869,48 @@ private fun ScrimIconButton(
 }
 
 private fun imageRequest(context: Context, uri: Uri): ImageRequest =
-    ImageRequest.Builder(context).data(uri).size(1600).build()
+    ImageRequest.Builder(context).data(uri).size(2400).build()
 
-private fun fileMeta(f: MediaFile): String {
+private fun fileMeta(f: MediaFile, details: String?): String {
     val parts = ArrayList<String>()
     if (f.lastModified > 0) {
         parts += DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(f.lastModified))
     }
+    if (details != null) parts += details else if (f.isVideo) parts += "video"
     if (f.size > 0) parts += formatSize(f.size)
-    if (f.isVideo) parts += "video"
     return parts.joinToString(" · ")
 }
+
+/** "4032×3024 · 12.2 MP" for photos, "1920×1080 · 0:32" for videos (null if unreadable). */
+private fun mediaDetails(context: Context, f: MediaFile): String? = runCatching {
+    if (f.isVideo) {
+        val r = MediaMetadataRetriever()
+        try {
+            r.setDataSource(context, f.uri)
+            val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+            val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            val dur = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            listOfNotNull(
+                if (w != null && h != null) (if (rot == 90 || rot == 270) "${h}×${w}" else "${w}×${h}") else null,
+                dur?.let { formatTime(it) },
+            ).joinToString(" · ")
+        } finally {
+            r.release()
+        }
+    } else {
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(f.uri)?.use { BitmapFactory.decodeStream(it, null, o) }
+        var w = o.outWidth
+        var h = o.outHeight
+        if (w <= 0 || h <= 0) return@runCatching null
+        val orientation = context.contentResolver.openInputStream(f.uri)?.use {
+            ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)
+        } ?: 1
+        if (orientation == 6 || orientation == 8) { val t = w; w = h; h = t }
+        "${w}×${h} · %.1f MP".format(w.toLong() * h / 1_000_000.0)
+    }
+}.getOrNull()?.takeIf { it.isNotEmpty() }
 
 private fun formatSize(bytes: Long): String = when {
     bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
@@ -724,6 +925,7 @@ private fun VideoPlayer(
     uri: Uri,
     muted: Boolean,
     leveled: Boolean,
+    speed: Float,
     paused: Boolean,
     onPlayer: (ExoPlayer) -> Unit,
     modifier: Modifier = Modifier,
@@ -746,6 +948,7 @@ private fun VideoPlayer(
         onDispose { leveler?.release() }
     }
     LaunchedEffect(player, muted) { player.volume = if (muted) 0f else 1f }
+    LaunchedEffect(player, speed) { player.setPlaybackSpeed(speed) }
     LaunchedEffect(player, paused) { player.playWhenReady = !paused }
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { player.pause() }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { player.playWhenReady = !paused }
@@ -836,12 +1039,19 @@ private fun DoneScreen(state: UiState, vm: SwipeViewModel) {
         if (nothing) {
             Text(
                 if (tagReview) "No matching files could be found."
-                else "Every file in this folder has been swiped already.",
+                else "Every file in this folder has been swiped already, or your filters hide the rest.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
         } else {
+            if (state.freedBytes > 0) {
+                Text(
+                    "About ${formatSize(state.freedBytes)} will be freed once the marked and binned files are deleted.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
                 StatBlock(AppIcons.Delete, DeleteRed, state.movedCount, "marked")
                 StatBlock(AppIcons.Check, KeepGreen, state.keptCount, "kept")

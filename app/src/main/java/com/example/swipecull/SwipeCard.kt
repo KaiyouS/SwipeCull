@@ -73,6 +73,12 @@ fun SwipeCard(
     onSwiped: (direction: Int) -> Unit,
     onTap: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Neutral NEXT / BACK overlay instead of KEEP / DELETE. */
+    browse: Boolean = false,
+    /** Return false to make a direction spring back (e.g. nothing earlier to go back to). */
+    canSwipe: (direction: Int) -> Boolean = { true },
+    /** Called with the horizontal position (0..1) of a double-tap; null leaves double-tap alone. */
+    onDoubleTap: ((fraction: Float) -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -80,6 +86,9 @@ fun SwipeCard(
     val currentOnSwiped by rememberUpdatedState(onSwiped)
     val currentOnTap by rememberUpdatedState(onTap)
     val currentEnabled by rememberUpdatedState(enabled)
+    val currentCanSwipe by rememberUpdatedState(canSwipe)
+    val currentDoubleTap by rememberUpdatedState(onDoubleTap)
+    val hasDoubleTap = onDoubleTap != null
 
     Box(
         modifier
@@ -90,8 +99,13 @@ fun SwipeCard(
             }
             .clip(RoundedCornerShape(24.dp))
             .background(Color.Black)
-            .pointerInput(state) {
-                detectTapGestures(onTap = { if (currentEnabled) currentOnTap() })
+            .pointerInput(state, hasDoubleTap) {
+                detectTapGestures(
+                    onTap = { if (currentEnabled) currentOnTap() },
+                    onDoubleTap = if (hasDoubleTap) {
+                        { p -> if (currentEnabled) currentDoubleTap?.invoke(p.x / size.width.coerceAtLeast(1)) }
+                    } else null,
+                )
             }
             .pointerInput(state) {
                 detectHorizontalDragGestures(
@@ -102,8 +116,8 @@ fun SwipeCard(
                             val threshold = state.widthPx * SWIPE_THRESHOLD_FRACTION
                             when {
                                 state.locked -> {}
-                                x > threshold -> { if (state.flingOut(1)) currentOnSwiped(1) }
-                                x < -threshold -> { if (state.flingOut(-1)) currentOnSwiped(-1) }
+                                x > threshold && currentCanSwipe(1) -> { if (state.flingOut(1)) currentOnSwiped(1) }
+                                x < -threshold && currentCanSwipe(-1) -> { if (state.flingOut(-1)) currentOnSwiped(-1) }
                                 else -> state.offsetX.animateTo(0f, spring())
                             }
                         }
@@ -129,17 +143,17 @@ fun SwipeCard(
             },
     ) {
         content()
-        SwipeOverlay(state)
+        SwipeOverlay(state, browse)
     }
 }
 
 @Composable
-private fun BoxScope.SwipeOverlay(state: SwipeCardState) {
+private fun BoxScope.SwipeOverlay(state: SwipeCardState, browse: Boolean) {
     val threshold = (state.widthPx * SWIPE_THRESHOLD_FRACTION).coerceAtLeast(1f)
     val p = (state.offsetX.value / threshold).coerceIn(-1f, 1f)
     if (p == 0f) return
 
-    val color = if (p > 0) KeepGreen else DeleteRed
+    val color = if (browse) Color.White else if (p > 0) KeepGreen else DeleteRed
     val strength = abs(p)
     val shape = RoundedCornerShape(24.dp)
 
@@ -150,7 +164,7 @@ private fun BoxScope.SwipeOverlay(state: SwipeCardState) {
             .border(4.dp, color.copy(alpha = strength), shape),
     )
     Text(
-        text = if (p > 0) "KEEP" else "DELETE",
+        text = if (browse) (if (p > 0) "BACK" else "NEXT") else if (p > 0) "KEEP" else "DELETE",
         color = color.copy(alpha = strength),
         fontSize = 36.sp,
         fontWeight = FontWeight.Black,
