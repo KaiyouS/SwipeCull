@@ -526,6 +526,10 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
             seekFlash = null
         }
     }
+    val cc = vm.captions
+    val ccState by cc.state.collectAsStateWithLifecycle()
+    var ccDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(item.uri) { if (item.isVideo) cc.loadFor(item) else cc.clear() }
     val details by produceState<String?>(null, item.uri) {
         value = withContext(Dispatchers.IO) { mediaDetails(context, item) }
     }
@@ -725,6 +729,25 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
                         style = MaterialTheme.typography.labelLarge,
                     )
                 }
+                val ccOn = ccState.cuesFor == item.uri.toString() && ccState.cues.isNotEmpty() && ccState.show
+                Box(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 128.dp, bottom = 12.dp)
+                        .height(44.dp)
+                        .clip(CircleShape)
+                        .background(if (ccOn) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.55f))
+                        .clickable { ccDialog = true }
+                        .padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "CC",
+                        color = if (ccOn) MaterialTheme.colorScheme.onPrimary else Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+                CaptionOverlay(ccState, item.uri.toString(), playerHolder.value)
             }
             seekFlash?.let { (text, _) ->
                 Box(
@@ -819,6 +842,9 @@ private fun ReviewScreen(state: UiState, vm: SwipeViewModel, imageLoader: ImageL
             onConfirm = { confirmDelete = false; vm.deleteMarkedPermanently() },
             onDismiss = { confirmDelete = false },
         )
+    }
+    if (ccDialog && item.isVideo) {
+        CaptionDialog(item, cc, ccState, onDismiss = { ccDialog = false })
     }
 }
 

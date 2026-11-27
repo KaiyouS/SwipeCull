@@ -32,6 +32,9 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     private val bin = BinStore(app)
     private val prefs = app.getSharedPreferences("swipecull", Context.MODE_PRIVATE)
 
+    /** On-demand video captions (speech recognition + translation). */
+    val captions = CaptionController(app, viewModelScope)
+
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
@@ -114,7 +117,48 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                     keepVideosOnly = prefs.getBoolean(KEY_KEEP_VIDEOS_ONLY, true),
                 )
             }
-            start() // resume where you left off (already-kept files are skipped)
+            resumeOrStart() // pick up where you left off (already-kept files are skipped)
+        }
+    }
+
+    // ---------------------------------------------------------------- resume
+
+    private fun reviewedSet(): Set<String> = prefs.getStringSet(KEY_REVIEWED, emptySet()) ?: emptySet()
+
+    /** Remembers that these files were handled in the current tag / favorites review. */
+    private fun markReviewed(vararg uris: String) {
+        if (session?.tagReview != true) return
+        prefs.edit().putStringSet(KEY_REVIEWED, HashSet(reviewedSet()) + uris.toSet()).apply()
+    }
+
+    private fun unmarkReviewed(vararg uris: String) {
+        val cur = reviewedSet()
+        if (uris.none { it in cur }) return
+        prefs.edit().putStringSet(KEY_REVIEWED, HashSet(cur) - uris.toSet()).apply()
+    }
+
+    private fun saveResume(kind: String?, tag: String? = null, fresh: Boolean) {
+        val e = prefs.edit()
+        if (kind == null) e.remove(KEY_RESUME_KIND).remove(KEY_RESUME_TAG) else e.putString(KEY_RESUME_KIND, kind)
+        if (tag != null) e.putString(KEY_RESUME_TAG, tag) else e.remove(KEY_RESUME_TAG)
+        if (fresh || kind == null) e.remove(KEY_REVIEWED)
+        e.apply()
+    }
+
+    /** On launch: reopen the tag / favorites review you were in, otherwise the normal folder review. */
+    private fun resumeOrStart() {
+        when (prefs.getString(KEY_RESUME_KIND, null)) {
+            "tag" -> {
+                val tag = prefs.getString(KEY_RESUME_TAG, null)
+                if (tag != null && tag in tags.snapshot().names) startTagReview(tag, resume = true) else {
+                    saveResume(null, fresh = true); start()
+                }
+            }
+            "all" -> startTagReview(null, resume = true)
+            "fav" -> if (Favorites.hasMediaAccess(appCtx)) startFavoritesReview(resume = true) else {
+                saveResume(null, fresh = true); start()
+            }
+            else -> start()
         }
     }
 
@@ -296,6 +340,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val keep = _state.value.keepUri
         val keepVideosOnly = _state.value.keepVideosOnly
         val cfg = _state.value
+        saveResume(null, fresh = true)
 
         val e = prefs.edit()
         e.putString(KEY_SOURCE, src.toString())
@@ -337,6 +382,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun endSession() {
+        saveResume(null, fresh = true)
         _state.update {
             it.copy(
                 sessionActive = false, loading = false, items = emptyList(), index = 0,
@@ -377,6 +423,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
             refreshTags()
         }
         synchronized(history) { history.addLast(action) }
+        markReviewed(file.uri.toString())
         _state.update {
             it.advance(true, file.size).copy(movedCount = it.movedCount + 1, canUndo = true)
         }
@@ -419,6 +466,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val action = Action(s.index, file, if (moves) Kind.KEEP_MOVE else Kind.KEEP_STAY)
 
         synchronized(history) { history.addLast(action) }
+        markReviewed(file.uri.toString())
         // (Tag reviews are driven by tags, not by the "already kept" list.)
         if (!moves && !ses.tagReview) kept.add(ses.source, file.documentId)
         _state.update { it.advance(moves).copy(keptCount = it.keptCount + 1, canUndo = true) }
@@ -430,6 +478,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                     action.origParent = from
                     val newUri = storage.move(file.uri, file.name, file.mime, from, keepParent)
                     action.movedUri = newUri
+                    markReviewed(newUri.toString())
                     tags.rename(file.uri.toString(), newUri.toString())
                     refreshTags()
                 } catch (e: Exception) {
@@ -458,6 +507,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
 
         if (action.kind == Kind.BIN) {
             val uri = action.file.uri.toString()
+            unmarkReviewed(uri)
             bin.remove(uri)
             if (action.savedTags.isNotEmpty()) tags.setTags(uri, action.savedTags)
             refreshTags()
@@ -471,6 +521,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         if (action.kind == Kind.KEEP_STAY) {
+            unmarkReviewed(action.file.uri.toString())
             kept.remove(ses.source, action.file.documentId)
             _state.update {
                 it.rewind(action.index).copy(keptCount = it.keptCount - 1, canUndo = hasHistory())
@@ -495,8 +546,12 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                         tags.rename(movedUri.toString(), restored.toString())
                     }
                     refreshTags()
+                    unmarkReviewed(action.file.uri.toString(), movedUri.toString(), restored.toString())
                 } else if (action.kind == Kind.KEEP_MOVE) {
                     kept.remove(ses.source, action.file.documentId)
+                    unmarkReviewed(action.file.uri.toString())
+                } else {
+                    unmarkReviewed(action.file.uri.toString())
                 }
             } catch (e: Exception) {
                 synchronized(history) { history.addLast(action) }
@@ -547,6 +602,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
             refreshTags()
         }
         bin.add(uri, file.isVideo)
+        markReviewed(uri)
         synchronized(history) { history.addLast(action) }
         _state.update {
             it.advance(true, file.size).copy(
@@ -637,7 +693,13 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(tagNames = d.names, tagAssign = d.assign) }
     }
 
-    fun openTags() = _state.update { it.copy(showTags = true) }
+    fun openTags() {
+        // Leaving a finished review for the tag list ends it; an unfinished one stays resumable.
+        if (_state.value.let { it.sessionActive && it.current == null && it.reviewLabel != null }) {
+            saveResume(null, fresh = true)
+        }
+        _state.update { it.copy(showTags = true) }
+    }
     fun closeTags() = _state.update { it.copy(showTags = false) }
 
     /** Adds/removes an existing tag on the file being reviewed. */
@@ -679,7 +741,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
      * Swipe through just the tagged files again (one tag, or every tagged file when [tag] is
      * null). Uses the same delete / keep folders as a normal run.
      */
-    fun startTagReview(tag: String?) {
+    fun startTagReview(tag: String?, resume: Boolean = false) {
         val s = _state.value
         val src = s.sourceUri
         if (src == null) {
@@ -687,12 +749,18 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val queuedForBin = bin.items().map { it.uri }.toSet()
+        val done = if (resume) reviewedSet() else emptySet()
         val uris = (if (tag == null) tags.snapshot().assign.keys.toList() else tags.urisWith(tag))
-            .filter { it !in queuedForBin }
+            .filter { it !in queuedForBin && it !in done }
         if (uris.isEmpty()) {
-            _events.tryEmit("No tagged files")
+            if (resume) {
+                saveResume(null, fresh = true)
+                start()
+                _events.tryEmit("That review is finished")
+            } else _events.tryEmit("No tagged files")
             return
         }
+        saveResume(if (tag == null) "all" else "tag", tag, fresh = !resume)
         val dst = s.destUri
         val keep = s.keepUri
         val keepVideosOnly = s.keepVideosOnly
@@ -744,7 +812,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
 
     fun notify(message: String) { _events.tryEmit(message) }
 
-    fun startFavoritesReview() {
+    fun startFavoritesReview(resume: Boolean = false) {
         val s = _state.value
         val src = s.sourceUri
         if (src == null) {
@@ -760,6 +828,8 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         val keepVideosOnly = s.keepVideosOnly
         val shuffle = s.shuffle
         val queuedForBin = bin.items().map { it.uri }.toSet()
+        val done = if (resume) reviewedSet() else emptySet()
+        saveResume("fav", fresh = !resume)
 
         synchronized(history) { history.clear() }
         session = null
@@ -798,7 +868,7 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         if (tree == null) { outside++; continue }
                         val doc = DocumentsContract.buildDocumentUriUsingTree(tree, id)
-                        if (doc.toString() in queuedForBin) continue
+                        if (doc.toString() in queuedForBin || doc.toString() in done) continue
                         val f = storage.mediaFileFor(doc)
                         if (f == null) outside++ else files += f
                     }
@@ -809,7 +879,13 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
                 session = result.first
                 _state.update { it.copy(loading = false, items = result.second) }
                 val (total, outside) = result.third
-                _events.tryEmit(
+                if (resume && result.second.isEmpty()) {
+                    saveResume(null, fresh = true)
+                    start()
+                    _events.tryEmit("That review is finished")
+                    return@launch
+                }
+                if (!resume) _events.tryEmit(
                     when {
                         total == 0 -> "Android's media database lists no favorites. Samsung Gallery may keep its own favorites list that other apps can't read."
                         outside > 0 -> "$total favorites found, $outside are in folders you haven't given this app access to (or no longer exist)"
@@ -975,6 +1051,9 @@ class SwipeViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_KEEP_VIDEOS_ONLY = "keep_videos_only"
         const val KEY_SHUFFLE = "shuffle"
         const val KEY_LEVEL = "level_volume"
+        const val KEY_RESUME_KIND = "resume_kind"   // "tag" | "all" | "fav"
+        const val KEY_RESUME_TAG = "resume_tag"
+        const val KEY_REVIEWED = "reviewed_uris"
         const val KEY_SORT = "sort"
         const val KEY_TYPE = "type_filter"
         const val KEY_MIN_MB = "min_mb"

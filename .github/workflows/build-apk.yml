@@ -22,6 +22,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
+      - name: Fetch whisper.cpp (speech recognition engine)
+        run: git clone --depth 1 --branch v1.7.5 https://github.com/ggml-org/whisper.cpp app/src/main/cpp/whisper.cpp
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
